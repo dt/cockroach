@@ -26,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
+	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 	"github.com/gogo/protobuf/proto"
@@ -38,6 +39,9 @@ type alterTableNode struct {
 	// commands - the JSON stats expressions.
 	// It is parallel with n.Cmds (for the inject stats commands).
 	statsData map[int]tree.TypedExpr
+
+	// revertTime is the target time to revert if cmds is a single revert command.
+	revertTime hlc.Timestamp
 }
 
 // AlterTable applies a schema change on a table.
@@ -65,27 +69,34 @@ func (p *planner) AlterTable(ctx context.Context, n *tree.AlterTable) (planNode,
 	// See if there's any "inject statistics" in the query and type check the
 	// expressions.
 	statsData := make(map[int]tree.TypedExpr)
+	var revertTime hlc.Timestamp
 	for i, cmd := range n.Cmds {
-		injectStats, ok := cmd.(*tree.AlterTableInjectStats)
-		if !ok {
-			continue
+		switch cmd := cmd.(type) {
+		case *tree.AlterTableInjectStats:
+			typedExpr, err := p.analyzeExpr(
+				ctx, cmd.Stats,
+				nil, /* sources - no name resolution */
+				tree.IndexedVarHelper{},
+				types.Jsonb, true, /* requireType */
+				"INJECT STATISTICS" /* typingContext */)
+			if err != nil {
+				return nil, err
+			}
+			statsData[i] = typedExpr
+		case *tree.AlterTableRevert:
+			ts, err := p.EvalAsOfTimestamp(cmd.AsOfClause)
+			if err != nil {
+				return nil, err
+			}
+			revertTime = ts
 		}
-		typedExpr, err := p.analyzeExpr(
-			ctx, injectStats.Stats,
-			nil, /* sources - no name resolution */
-			tree.IndexedVarHelper{},
-			types.Jsonb, true, /* requireType */
-			"INJECT STATISTICS" /* typingContext */)
-		if err != nil {
-			return nil, err
-		}
-		statsData[i] = typedExpr
 	}
 
 	return &alterTableNode{
-		n:         n,
-		tableDesc: tableDesc,
-		statsData: statsData,
+		n:          n,
+		tableDesc:  tableDesc,
+		statsData:  statsData,
+		revertTime: revertTime,
 	}, nil
 }
 
@@ -604,6 +615,19 @@ func (n *alterTableNode) startExec(params runParams) error {
 			if err := injectTableStats(params, n.tableDesc.TableDesc(), sd); err != nil {
 				return err
 			}
+
+		case *tree.AlterTableRevert:
+			if len(n.n.Cmds) != 1 {
+				return pgerror.Newf(pgcode.SyntaxErrorOrAccessRuleViolation, "cannot revert a table while modifying it")
+			}
+			if params.p.ExtendedEvalContext().TxnImplicit {
+				return pgerror.Newf(pgcode.SyntaxErrorOrAccessRuleViolation, "cannot revert a table in a transaction")
+			}
+			// TODO(dt): implement cascade.
+			tables := []*sqlbase.TableDescriptor{n.tableDesc.TableDesc()}
+			return RevertTables(
+				params.ctx, params.ExecCfg().DB, tables, n.revertTime, RevertTableDefaultBatchSize,
+			)
 
 		case *tree.AlterTableRenameColumn:
 			descChanged, err := params.p.renameColumn(params.ctx, n.tableDesc, &t.Column, &t.NewName)

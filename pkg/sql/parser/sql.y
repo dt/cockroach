@@ -503,7 +503,7 @@ func newNameFromStr(s string) *tree.Name {
 %token <str> ELSE ENCODING END ENUM ESCAPE EXCEPT
 %token <str> EXISTS EXECUTE EXPERIMENTAL
 %token <str> EXPERIMENTAL_FINGERPRINTS EXPERIMENTAL_REPLICA
-%token <str> EXPERIMENTAL_AUDIT
+%token <str> EXPERIMENTAL_AUDIT EXPERIMENTAL_REVERT
 %token <str> EXPIRATION EXPLAIN EXPORT EXTENSION EXTRACT EXTRACT_DURATION
 
 %token <str> FALSE FAMILY FETCH FETCHVAL FETCHTEXT FETCHVAL_PATH FETCHTEXT_PATH
@@ -985,7 +985,7 @@ func newNameFromStr(s string) *tree.Name {
 %type <privilege.List> privileges
 %type <tree.AuditMode> audit_mode
 
-%type <str> relocate_kw 
+%type <str> relocate_kw
 
 %type <*tree.SetZoneConfig> set_zone_config
 
@@ -1647,6 +1647,14 @@ alter_table_cmd:
     /* SKIP DOC */
     $$.val = &tree.AlterTableInjectStats{
       Stats: $3.expr(),
+    }
+  }
+| EXPERIMENTAL_REVERT TO as_of_clause opt_drop_behavior
+  {
+    /* SKIP DOC */
+    $$.val = &tree.AlterTableRevert{
+      AsOfClause: $3.asOfClause(),
+      DropBehavior: $4.dropBehavior(),
     }
   }
 
@@ -3801,7 +3809,7 @@ show_ranges_stmt:
   {
     $$.val = &tree.ShowRanges{TableOrIndex: $5.tableIndexName()}
   }
-| SHOW RANGES FROM DATABASE database_name 
+| SHOW RANGES FROM DATABASE database_name
   {
     $$.val = &tree.ShowRanges{DatabaseName: $5}
   }
@@ -9149,6 +9157,7 @@ unreserved_keyword:
 | EXPERIMENTAL_FINGERPRINTS
 | EXPERIMENTAL_RELOCATE
 | EXPERIMENTAL_REPLICA
+| EXPERIMENTAL_REVERT
 | EXPIRATION
 | EXPLAIN
 | EXPORT

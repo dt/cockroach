@@ -66,6 +66,7 @@ func (*AlterTableSetDefault) alterTableCmd()         {}
 func (*AlterTableValidateConstraint) alterTableCmd() {}
 func (*AlterTablePartitionBy) alterTableCmd()        {}
 func (*AlterTableInjectStats) alterTableCmd()        {}
+func (*AlterTableRevert) alterTableCmd()             {}
 
 var _ AlterTableCmd = &AlterTableAddColumn{}
 var _ AlterTableCmd = &AlterTableAddConstraint{}
@@ -83,6 +84,7 @@ var _ AlterTableCmd = &AlterTableSetDefault{}
 var _ AlterTableCmd = &AlterTableValidateConstraint{}
 var _ AlterTableCmd = &AlterTablePartitionBy{}
 var _ AlterTableCmd = &AlterTableInjectStats{}
+var _ AlterTableCmd = &AlterTableRevert{}
 
 // ColumnMutationCmd is the subset of AlterTableCmds that modify an
 // existing column.
@@ -421,4 +423,20 @@ type AlterTableInjectStats struct {
 func (node *AlterTableInjectStats) Format(ctx *FmtCtx) {
 	ctx.WriteString(" INJECT STATISTICS ")
 	ctx.FormatNode(node.Stats)
+}
+
+// AlterTableRevert represents an ALTER TABLE REVERT TO SYSTEM TIME statement.
+type AlterTableRevert struct {
+	AsOfClause
+	DropBehavior
+}
+
+// Format implements the NodeFormatter interface.
+func (node *AlterTableRevert) Format(ctx *FmtCtx) {
+	ctx.WriteString(" EXPERIMENTAL_REVERT TO SYSTEM TIME ")
+	ctx.FormatNode(&node.AsOfClause)
+	if node.DropBehavior != DropDefault {
+		ctx.Printf(" %s", node.DropBehavior)
+	}
+
 }
