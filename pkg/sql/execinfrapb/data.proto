@@ -270,11 +270,25 @@ message RemoteProducerMetadata {
     optional bool histogram_disabled = 2 [(gogoproto.nullable) = false];
   }
   message BulkProcessorProgress {
+    optional int32 sender_id = 5 [(gogoproto.nullable) = false];;
     repeated roachpb.Span completed_spans = 1 [(gogoproto.nullable) = false];
     map<int32, float> completed_fraction = 2;
     map<int32, int64> resume_pos = 3;
     // Used to stream back progress to the coordinator of a bulk job.
     optional google.protobuf.Any progress_details = 4 [(gogoproto.nullable) = false];
+    message Status {
+      // Name of some process/system/aspect of the processor.
+      optional string name = 1 [(gogoproto.nullable) = false];
+      // State of some aspect of the processor, e.g. "waiting on flush".
+      optional string state = 2 [(gogoproto.nullable) = false];
+
+      optional int64 updatedMicros = 3 [(gogoproto.nullable) = false];
+      // Details is an opaque, processor-specific payload that can be used to
+      // aggregate structured details for a given process (e.g. track throughput
+      // or error rates or something aggregated across processors).
+      optional google.protobuf.Any details = 4;
+    }
+    repeated Status status = 6 [(gogoproto.nullable) = false];
   }
   // Metrics are unconditionally emitted by table readers.
   message Metrics {

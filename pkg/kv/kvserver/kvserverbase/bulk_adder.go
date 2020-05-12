@@ -57,6 +57,11 @@ type BulkAdderOptions struct {
 	// DisallowShadowing controls whether shadowing of existing keys is permitted
 	// when the SSTables produced by this adder are ingested.
 	DisallowShadowing bool
+
+	// StatusReporter is used to report the status of this adder.
+	StatusReporter func(name, status string)
+	// StatusName is the name prefix under which this adder should report status.
+	StatusName string
 }
 
 // BulkAdderFactory describes a factory function for BulkAdders.
@@ -80,6 +85,9 @@ type BulkAdder interface {
 	Close(ctx context.Context)
 	// SetOnFlush sets a callback function called after flushing the buffer.
 	SetOnFlush(func())
+	// GetStatus returns the exeuction status of this adder and its sender and
+	// when it was last updated in unix micros.
+	GetStatus() (string, int64, string, int64)
 }
 
 // DuplicateKeyError represents a failed attempt to ingest the same key twice

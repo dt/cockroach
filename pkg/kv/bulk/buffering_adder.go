@@ -13,6 +13,7 @@ package bulk
 import (
 	"context"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
@@ -61,6 +62,9 @@ type BufferingAdder struct {
 	memAcc  mon.BoundAccount
 
 	onFlush func()
+
+	statusAtomic        uint32
+	statusUpdatedAtomic int64
 }
 
 var _ kvserverbase.BulkAdder = &BufferingAdder{}
@@ -130,6 +134,7 @@ func MakeBulkAdder(
 	if err := b.memAcc.Grow(ctx, b.curBufferSize); err != nil {
 		return nil, errors.Wrap(err, "Not enough memory available to create a BulkAdder. Try setting a higher --max-sql-memory.")
 	}
+	b.setStatus(statusReady)
 
 	return b, nil
 }
@@ -173,17 +178,19 @@ func (b *BufferingAdder) Add(ctx context.Context, key roachpb.Key, value []byte)
 		// if it has exceeded its upper bound.
 		if b.bulkMon != nil && b.curBufferSize < b.maxBufferSize() {
 			if err := b.memAcc.Grow(ctx, b.incrementBufferSize); err != nil {
+				b.setStatus(statusFlushingDueToMem)
 				// If we are unable to reserve the additional memory then flush the
 				// buffer, and continue as normal.
 				b.flushCounts.bufferSize++
 				log.VEventf(ctx, 3, "buffer size triggering flush of %s buffer", sz(b.curBuf.MemSize))
-				return b.Flush(ctx)
+				return b.doFlush(ctx)
 			}
 			b.curBufferSize += b.incrementBufferSize
 		} else {
+			b.setStatus(statusFlushing)
 			b.flushCounts.bufferSize++
 			log.VEventf(ctx, 3, "buffer size triggering flush of %s buffer", sz(b.curBuf.MemSize))
-			return b.Flush(ctx)
+			return b.doFlush(ctx)
 		}
 	}
 	return nil
@@ -201,12 +208,19 @@ func (b *BufferingAdder) IsEmpty() bool {
 
 // Flush flushes any buffered kvs to the batcher.
 func (b *BufferingAdder) Flush(ctx context.Context) error {
+	b.setStatus(statusFlushing)
+	return b.doFlush(ctx)
+}
+
+// doFlush flushes any buffered kvs to the batcher.
+func (b *BufferingAdder) doFlush(ctx context.Context) error {
 	if b.curBuf.Len() == 0 {
 		if b.onFlush != nil {
 			b.onFlush()
 		}
 		return nil
 	}
+
 	if err := b.sink.Reset(ctx); err != nil {
 		return err
 	}
@@ -264,10 +278,31 @@ func (b *BufferingAdder) Flush(ctx context.Context) error {
 		b.onFlush()
 	}
 	b.curBuf.Reset()
+	b.setStatus(statusReady)
 	return nil
 }
 
 // GetSummary returns this batcher's total added rows/bytes/etc.
 func (b *BufferingAdder) GetSummary() roachpb.BulkOpSummary {
 	return b.sink.GetSummary()
+}
+
+func (b *BufferingAdder) setStatus(status uint32) {
+	atomic.StoreUint32(&b.statusAtomic, status)
+	atomic.StoreInt64(&b.statusUpdatedAtomic, timeutil.ToUnixMicros(timeutil.Now()))
+}
+
+// GetStatus returns the current status of the buffer and its sink.
+func (b *BufferingAdder) GetStatus() (string, int64, string, int64) {
+	buffer := statusStrings[atomic.LoadUint32(&b.statusAtomic)]
+	bufferUpdated := atomic.LoadInt64(&b.statusUpdatedAtomic)
+	sink := atomic.LoadUint32(&b.sink.statusAtomic)
+	sinkStatus := statusStrings[sink]
+	sinkUpdated := atomic.LoadInt64(&b.sink.statusUpdatedAtomic)
+	if sink == statusSending || sink == statusSendingDueToRange || sink == statusResendingDueToSplit {
+		b.sink.statusSending.Lock()
+		sinkStatus += " " + b.sink.statusSending.dest.String()
+		b.sink.statusSending.Unlock()
+	}
+	return buffer, bufferUpdated, sinkStatus, sinkUpdated
 }

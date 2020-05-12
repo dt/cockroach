@@ -40,9 +40,10 @@ var csvOutputTypes = []*types.T{
 }
 
 type readImportDataProcessor struct {
-	flowCtx *execinfra.FlowCtx
-	spec    execinfrapb.ReadImportDataSpec
-	output  execinfra.RowReceiver
+	flowCtx     *execinfra.FlowCtx
+	processorID int32
+	spec        execinfrapb.ReadImportDataSpec
+	output      execinfra.RowReceiver
 }
 
 var _ execinfra.Processor = &readImportDataProcessor{}
@@ -58,9 +59,10 @@ func newReadImportDataProcessor(
 	output execinfra.RowReceiver,
 ) (execinfra.Processor, error) {
 	cp := &readImportDataProcessor{
-		flowCtx: flowCtx,
-		spec:    spec,
-		output:  output,
+		flowCtx:     flowCtx,
+		processorID: processorID,
+		spec:        spec,
+		output:      output,
 	}
 	return cp, nil
 }
@@ -84,6 +86,7 @@ func (cp *readImportDataProcessor) Run(ctx context.Context) {
 	for prog := range progCh {
 		// Take a copy so that we can send the progress address to the output processor.
 		p := prog
+		p.SenderId = cp.processorID
 		cp.output.Push(nil, &execinfrapb.ProducerMetadata{BulkProcessorProgress: &p})
 	}
 
@@ -274,6 +277,10 @@ func ingestKvs(
 		for i, emitted := range writtenRow {
 			atomic.StoreInt64(&pkFlushedRow[i], emitted)
 		}
+		// If we aren't emitting any index KVs, it will never fill and flush which
+		// would naively leave it at 0 progress. However it is Ok to call an empty
+		// buffer flushed, so _if it is empty_ (which it would be in the no indexes
+		// case), we can just update its progress to match the flushed PK progress.
 		if indexAdder.IsEmpty() {
 			for i, emitted := range writtenRow {
 				atomic.StoreInt64(&idxFlushedRow[i], emitted)
@@ -294,6 +301,9 @@ func ingestKvs(
 		offset++
 	}
 
+	var pkBuf, pkSender = "pk-buffer", "pk-sender"
+	var idxBuf, idxSender = "index-buffer", "index-sender"
+
 	pushProgress := func() {
 		var prog execinfrapb.RemoteProducerMetadata_BulkProcessorProgress
 		prog.ResumePos = make(map[int32]int64)
@@ -310,6 +320,18 @@ func ingestKvs(
 			}
 			prog.CompletedFraction[file] = math.Float32frombits(atomic.LoadUint32(&writtenFraction[offset]))
 		}
+
+		pkBufStatus, pkBufStatusUpdated, pkSenderStatus, pkSenderStatusUpdated := pkIndexAdder.GetStatus()
+		idxBufStatus, idxBufStatusUpdated, idxSenderStatus, idxSenderStatusUpdated := indexAdder.GetStatus()
+		prog.Status = append(prog.Status, execinfrapb.RemoteProducerMetadata_BulkProcessorProgress_Status{
+			Name: pkBuf, State: pkBufStatus, UpdatedMicros: pkBufStatusUpdated,
+		}, execinfrapb.RemoteProducerMetadata_BulkProcessorProgress_Status{
+			Name: pkSender, State: pkSenderStatus, UpdatedMicros: pkSenderStatusUpdated,
+		}, execinfrapb.RemoteProducerMetadata_BulkProcessorProgress_Status{
+			Name: idxBuf, State: idxBufStatus, UpdatedMicros: idxBufStatusUpdated,
+		}, execinfrapb.RemoteProducerMetadata_BulkProcessorProgress_Status{
+			Name: idxSender, State: idxSenderStatus, UpdatedMicros: idxSenderStatusUpdated,
+		})
 		progCh <- prog
 	}
 

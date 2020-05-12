@@ -253,13 +253,32 @@ func DistIngest(
 		)
 	}
 
-	metaFn := func(_ context.Context, meta *execinfrapb.ProducerMetadata) error {
+	processorNodeIDs := make(map[int32]roachpb.NodeID)
+	for i := range p.Processors {
+		processorNodeIDs[p.Processors[i].Spec.ProcessorID] = p.Processors[i].Node
+	}
+	procStatus := phs.ExecCfg().JobRegistry.ExecutionStatusDetails(*job.ID())
+
+	metaFn := func(ctx context.Context, meta *execinfrapb.ProducerMetadata) error {
 		if meta.BulkProcessorProgress != nil {
 			for i, v := range meta.BulkProcessorProgress.ResumePos {
 				atomic.StoreInt64(&rowProgress[i], v)
 			}
 			for i, v := range meta.BulkProcessorProgress.CompletedFraction {
 				atomic.StoreUint32(&fractionProgress[i], math.Float32bits(v))
+			}
+			if len(meta.BulkProcessorProgress.Status) > 0 {
+				sender := meta.BulkProcessorProgress.SenderId
+				procStatus.Lock()
+				defer procStatus.Unlock()
+				proc := procStatus.Processor(sender)
+				proc.NodeID = processorNodeIDs[sender]
+				if proc.Tasks == nil {
+					proc.Tasks = make(map[string]jobs.ProcessorTaskStatus, len(meta.BulkProcessorProgress.Status))
+				}
+				for _, update := range meta.BulkProcessorProgress.Status {
+					proc.Tasks[update.Name] = jobs.ProcessorTaskStatus{Status: update.State, LastUpdatedMicros: update.UpdatedMicros}
+				}
 			}
 
 			if alwaysFlushProgress {
