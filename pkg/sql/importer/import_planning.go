@@ -17,6 +17,7 @@ import (
 	"math"
 	"net/url"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -443,6 +444,9 @@ func importPlanHook(
 					if len(expandedFiles) < 1 {
 						return errors.Errorf(`no files matched %q in prefix %q in uri provided: %q`, pattern, prefix, file)
 					}
+					sort.Slice(expandedFiles, func(i, j int) bool {
+						return comparePathsWithNumbers(expandedFiles[i], expandedFiles[j])
+					})
 					files = append(files, expandedFiles...)
 				} else {
 					files = append(files, file)
@@ -1195,6 +1199,34 @@ func (u *unsupportedStmtLogger) flush() error {
 	u.numIgnoredStmts = 0
 	u.logBuffer.Truncate(0)
 	return nil
+}
+
+var breakOnNumbersRE = regexp.MustCompile(`(\d+|\D+)`)
+
+func comparePathsWithNumbers(a, b string) bool {
+	aParts := breakOnNumbersRE.FindAllString(a, -1)
+	bParts := breakOnNumbersRE.FindAllString(b, -1)
+
+	for i := range aParts {
+		if i >= len(bParts) {
+			return false
+		}
+		strCmp := strings.Compare(aParts[i], bParts[i])
+		if strCmp == 0 {
+			continue
+		}
+
+		numA, aErr := strconv.Atoi(aParts[i])
+		numB, bErr := strconv.Atoi(bParts[i])
+		if aErr == nil && bErr == nil {
+			if numA < numB {
+				return true
+			}
+			return false
+		}
+		return strCmp < 0
+	}
+	return false
 }
 
 func init() {

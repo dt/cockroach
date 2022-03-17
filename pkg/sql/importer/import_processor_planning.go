@@ -242,22 +242,26 @@ func makeImportReaderSpecs(
 	user security.SQLUsername,
 ) []*execinfrapb.ReadImportDataSpec {
 	details := job.Details().(jobspb.ImportDetails)
+
+	if len(sqlInstanceIDs) > len(from) {
+		sqlInstanceIDs = sqlInstanceIDs[:len(from)]
+	}
 	// For each input file, assign it to a node.
-	inputSpecs := make([]*execinfrapb.ReadImportDataSpec, 0, len(sqlInstanceIDs))
+	inputSpecs := make([]*execinfrapb.ReadImportDataSpec, len(sqlInstanceIDs))
 	progress := job.Progress()
 	importProgress := progress.GetImport()
-	for i, input := range from {
-		// Round robin assign CSV files to sqlInstanceIDs. Files 0 through len(sqlInstanceIDs)-1
-		// creates the spec. Future files just add themselves to the Uris.
-		if i < len(sqlInstanceIDs) {
-			spec := &execinfrapb.ReadImportDataSpec{
+
+	for fileNum, fileURI := range from {
+		target := fileNum * len(sqlInstanceIDs) / len(from)
+		if inputSpecs[target] == nil {
+			inputSpecs[target] = &execinfrapb.ReadImportDataSpec{
 				JobID:  int64(job.ID()),
 				Tables: tables,
 				Types:  typeDescs,
 				Format: format,
 				Progress: execinfrapb.JobProgress{
 					JobID: job.ID(),
-					Slot:  int32(i),
+					Slot:  int32(target),
 				},
 				WalltimeNanos:         walltime,
 				Uri:                   make(map[int32]string),
@@ -266,12 +270,10 @@ func makeImportReaderSpecs(
 				DatabasePrimaryRegion: details.DatabasePrimaryRegion,
 				InitialSplits:         int32(len(sqlInstanceIDs)),
 			}
-			inputSpecs = append(inputSpecs, spec)
 		}
-		n := i % len(sqlInstanceIDs)
-		inputSpecs[n].Uri[int32(i)] = input
+		inputSpecs[target].Uri[int32(fileNum)] = fileURI
 		if importProgress.ResumePos != nil {
-			inputSpecs[n].ResumePos[int32(i)] = importProgress.ResumePos[int32(i)]
+			inputSpecs[target].ResumePos[int32(fileNum)] = importProgress.ResumePos[int32(fileNum)]
 		}
 	}
 
