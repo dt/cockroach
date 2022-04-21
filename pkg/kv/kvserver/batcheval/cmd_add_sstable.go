@@ -151,7 +151,7 @@ func EvalAddSSTable(
 	maxIntents := storage.MaxIntentsPerWriteIntentError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
 	checkConflicts := args.DisallowConflicts || args.DisallowShadowing ||
 		!args.DisallowShadowingBelow.IsEmpty()
-	if checkConflicts {
+	if checkConflicts && false {
 		// If requested, check for MVCC conflicts with existing keys. This enforces
 		// all MVCC invariants by returning WriteTooOldError for any existing
 		// values at or above the SST timestamp, returning WriteIntentError to
