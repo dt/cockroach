@@ -18,6 +18,7 @@
 package sort
 
 import (
+	"math/bits"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/util/cancelchecker"
@@ -30,36 +31,7 @@ import (
 // TODO(itsbilal): Consider referencing the RowContainer pointer type
 // directly instead of redirecting all calls through sort.Interface.
 
-// Insertion sort
-func insertionSort(data sort.Interface, a, b int) {
-	for i := a + 1; i < b; i++ {
-		for j := i; j > a && data.Less(j, j-1); j-- {
-			data.Swap(j, j-1)
-		}
-	}
-}
-
-// siftDown implements the heap property on data[lo, hi).
-// first is an offset into the array where the root of the heap lies.
-func siftDown(data sort.Interface, lo, hi, first int) {
-	root := lo
-	for {
-		child := 2*root + 1
-		if child >= hi {
-			break
-		}
-		if child+1 < hi && data.Less(first+child, first+child+1) {
-			child++
-		}
-		if !data.Less(first+root, first+child) {
-			return
-		}
-		data.Swap(first+root, first+child)
-		root = child
-	}
-}
-
-func heapSort(data sort.Interface, a, b int, cancelChecker *cancelchecker.CancelChecker) {
+func heapSortCancel(data sort.Interface, a, b int, cancelChecker *cancelchecker.CancelChecker) {
 	first := a
 	lo := 0
 	hi := b - a
@@ -201,7 +173,7 @@ func quickSort(
 ) {
 	for b-a > 12 { // Use ShellSort for slices <= 12 elements
 		if maxDepth == 0 {
-			heapSort(data, a, b, cancelChecker)
+			heapSortCancel(data, a, b, cancelChecker)
 			return
 		}
 		maxDepth--
@@ -235,7 +207,50 @@ func quickSort(
 // Sort sorts data.
 // It makes one call to data.Len to determine n, and O(n*log(n)) calls to
 // data.Less and data.Swap. The sort is not guaranteed to be stable.
-func Sort(data sort.Interface, cancelChecker *cancelchecker.CancelChecker) {
+func SortWithCancel(data sort.Interface, cancelChecker *cancelchecker.CancelChecker) {
 	n := data.Len()
 	quickSort(data, 0, n, maxDepth(n), cancelChecker)
+}
+
+// Sort sorts data in ascending order as determined by the Less method.
+// It makes one call to data.Len to determine n and O(n*log(n)) calls to
+// data.Less and data.Swap. The sort is not guaranteed to be stable.
+func Sort(data sort.Interface) {
+	n := data.Len()
+	if n <= 1 {
+		return
+	}
+	limit := bits.Len(uint(n))
+	pdqsort(data, 0, n, limit)
+}
+
+type sortedHint int // hint for pdqsort when choosing the pivot
+
+const (
+	unknownHint sortedHint = iota
+	increasingHint
+	decreasingHint
+)
+
+// xorshift paper: https://www.jstatsoft.org/article/view/v008i14/xorshift.pdf
+type xorshift uint64
+
+func (r *xorshift) Next() uint64 {
+	*r ^= *r << 13
+	*r ^= *r >> 17
+	*r ^= *r << 5
+	return uint64(*r)
+}
+
+func nextPowerOfTwo(length int) uint {
+	shift := uint(bits.Len(uint(length)))
+	return uint(1 << shift)
+}
+
+// lessSwap is a pair of Less and Swap function for use with the
+// auto-generated func-optimized variant of sort.go in
+// zfuncversion.go.
+type lessSwap struct {
+	Less func(i, j int) bool
+	Swap func(i, j int)
 }

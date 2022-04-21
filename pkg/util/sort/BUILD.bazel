@@ -1,9 +1,30 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "sort",
-    srcs = ["sort.go"],
+    srcs = [
+        "slice.go",
+        "slice_go113.go",
+        "slice_go14.go",
+        "slice_go18.go",
+        "sort.go",
+        "zsortfunc.go",
+        "zsortinterface.go",
+    ],
     importpath = "github.com/cockroachdb/cockroach/pkg/util/sort",
     visibility = ["//visibility:public"],
     deps = ["//pkg/util/cancelchecker"],
+)
+
+go_test(
+    name = "sort_test",
+    srcs = [
+        "example_interface_test.go",
+        "example_keys_test.go",
+        "example_multi_test.go",
+        "example_search_test.go",
+        "example_test.go",
+        "example_wrapper_test.go",
+        "sort_test.go",
+    ],
 )

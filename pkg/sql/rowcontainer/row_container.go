@@ -222,7 +222,7 @@ func (mc *MemRowContainer) Sort(ctx context.Context) {
 	mc.invertSorting = false
 	var cancelChecker cancelchecker.CancelChecker
 	cancelChecker.Reset(ctx)
-	sort.Sort(mc, &cancelChecker)
+	sort.SortWithCancel(mc, &cancelChecker)
 }
 
 // Reorder implements ReorderableRowContainer. We don't need to create a new
