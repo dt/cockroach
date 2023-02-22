@@ -18,6 +18,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
@@ -1152,8 +1153,8 @@ func (dsp *DistSQLPlanner) PartitionSpans(
 		// If we're planning locally, map all spans to the gateway.
 		return []SpanPartition{{dsp.gatewaySQLInstanceID, spans}}, nil
 	}
-	if dsp.codec.ForSystemTenant() {
-		return dsp.partitionSpansSystem(ctx, planCtx, spans)
+	if dsp.codec.ForSystemTenant() && !dsp.st.Version.IsActive(ctx, clusterversion.V23_1Start) {
+		return dsp.partitionSpansSystemDeprecated(ctx, planCtx, spans)
 	}
 	return dsp.partitionSpansTenant(ctx, planCtx, spans)
 }
@@ -1264,11 +1265,18 @@ func (dsp *DistSQLPlanner) partitionSpan(
 	return partitions, lastPartitionIdx, nil
 }
 
-// partitionSpansSystem finds node owners for ranges touching the given spans
-// for a system tenant.
-func (dsp *DistSQLPlanner) partitionSpansSystem(
+// partitionSpansSystemDeprecated finds node owners for ranges touching the
+// given spans for a system tenant.
+//
+// Deprecated: Once cluster version indicates upgrade to 23.1 has started, we
+// can assume all nodes are populating the instances table within all tenants
+// including the system tenant, and thus always use that instead of having a
+// special-case for the system tenant. This function can be deleted once support
+// for interoperation with 22.2 is dropped.
+func (dsp *DistSQLPlanner) partitionSpansSystemDeprecated(
 	ctx context.Context, planCtx *PlanningCtx, spans roachpb.Spans,
 ) (partitions []SpanPartition, _ error) {
+	var _ = clusterversion.V22_2 /// delete function when 22.2 support is dropped.
 	nodeMap := make(map[base.SQLInstanceID]int)
 	resolver := func(nodeID roachpb.NodeID) base.SQLInstanceID {
 		return dsp.getSQLInstanceIDForKVNodeIDSystem(ctx, planCtx, nodeID)

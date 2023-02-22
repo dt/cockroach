@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/physicalplan"
 	"github.com/cockroachdb/cockroach/pkg/sql/physicalplan/replicaoracle"
@@ -38,20 +39,39 @@ func (dsp *DistSQLPlanner) SetupAllNodesPlanningWithOracle(
 	execCfg *ExecutorConfig,
 	oracle replicaoracle.Oracle,
 ) (*PlanningCtx, []base.SQLInstanceID, error) {
-	if dsp.codec.ForSystemTenant() {
-		return dsp.setupAllNodesPlanningSystem(ctx, evalCtx, execCfg, oracle)
+	if dsp.codec.ForSystemTenant() && dsp.st.Version.IsActive(ctx, clusterversion.V23_1Start) {
+		return dsp.setupAllNodesPlanningSystemDeprecated(ctx, evalCtx, execCfg, oracle)
 	}
-	return dsp.setupAllNodesPlanningTenant(ctx, evalCtx, execCfg, oracle)
+
+	planCtx := dsp.NewPlanningCtxWithOracle(ctx, evalCtx, nil /* planner */, nil, /* txn */
+		DistributionTypeAlways, oracle)
+	pods, err := dsp.sqlAddressResolver.GetAllInstances(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	sqlInstanceIDs := make([]base.SQLInstanceID, len(pods))
+	for i, pod := range pods {
+		sqlInstanceIDs[i] = pod.InstanceID
+	}
+	return planCtx, sqlInstanceIDs, nil
 }
 
-// setupAllNodesPlanningSystem creates a planCtx and returns all nodes available
-// in a system tenant.
-func (dsp *DistSQLPlanner) setupAllNodesPlanningSystem(
+// setupAllNodesPlanningSystemDeprecated creates a planCtx and returns all nodes
+// available in a system tenant.
+//
+// Deprecated: Once cluster version indicates upgrade to 23.1 has started, we
+// can assume all nodes are populating the instances table within all tenants
+// including the system tenant, and thus always use that instead of having a
+// special-case for the system tenant. This function can be deleted once support
+// for interoperation with 22.2 is dropped.
+func (dsp *DistSQLPlanner) setupAllNodesPlanningSystemDeprecated(
 	ctx context.Context,
 	evalCtx *extendedEvalContext,
 	execCfg *ExecutorConfig,
 	oracle replicaoracle.Oracle,
 ) (*PlanningCtx, []base.SQLInstanceID, error) {
+	var _ = clusterversion.V22_2 /// delete function when 22.2 support is dropped.
+
 	planCtx := dsp.NewPlanningCtxWithOracle(ctx, evalCtx, nil /* planner */, nil, /* txn */
 		DistributionTypeAlways, oracle)
 
@@ -76,27 +96,6 @@ func (dsp *DistSQLPlanner) setupAllNodesPlanningSystem(
 		}
 	}
 	return planCtx, nodes, nil
-}
-
-// setupAllNodesPlanningTenant creates a planCtx and returns all nodes available
-// in a non-system tenant.
-func (dsp *DistSQLPlanner) setupAllNodesPlanningTenant(
-	ctx context.Context,
-	evalCtx *extendedEvalContext,
-	execCfg *ExecutorConfig,
-	oracle replicaoracle.Oracle,
-) (*PlanningCtx, []base.SQLInstanceID, error) {
-	planCtx := dsp.NewPlanningCtxWithOracle(ctx, evalCtx, nil /* planner */, nil, /* txn */
-		DistributionTypeAlways, oracle)
-	pods, err := dsp.sqlAddressResolver.GetAllInstances(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	sqlInstanceIDs := make([]base.SQLInstanceID, len(pods))
-	for i, pod := range pods {
-		sqlInstanceIDs[i] = pod.InstanceID
-	}
-	return planCtx, sqlInstanceIDs, nil
 }
 
 // PhysicalPlanMaker describes a function that makes a physical plan.
