@@ -315,3 +315,37 @@ func (i InfoStorage) GetLegacyProgress(ctx context.Context) ([]byte, bool, error
 func (i InfoStorage) WriteLegacyProgress(ctx context.Context, progress []byte) error {
 	return i.Write(ctx, LegacyProgressKey, progress)
 }
+
+func (i InfoStorage) MaybeBackfillMissingPayload(ctx context.Context) ([]byte, error) {
+	return i.backfillMissing(ctx, "payload")
+}
+
+func (i InfoStorage) MaybeBackfillMissingProgress(ctx context.Context) ([]byte, error) {
+	return i.backfillMissing(ctx, "progress")
+}
+
+func (i InfoStorage) backfillMissing(ctx context.Context, kind string) ([]byte, error) {
+
+	row, err := i.txn.QueryRowEx(
+		ctx, "job-info-get", i.txn.KV(),
+		sessiondata.NodeUserSessionDataOverride,
+		`INSERT INTO system.job_info (job_id, info_key, value) 
+			SELECT id, 'legacy_`+kind+`', `+kind+` FROM system.jobs WHERE id = $1
+			RETURNING value`,
+		i.j.ID(),
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if row == nil {
+		return nil, errors.Wrap(&JobNotFoundError{jobID: i.j.ID()}, "job not found in system.jobs")
+	}
+
+	value, ok := row[0].(*tree.DBytes)
+	if !ok {
+		return nil, errors.AssertionFailedf("job info: expected value to be DBytes (was %T)", row[0])
+	}
+	return []byte(*value), nil
+}
