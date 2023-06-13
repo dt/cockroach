@@ -45,6 +45,9 @@ const (
 func backfillJobInfoTable(
 	ctx context.Context, cs clusterversion.ClusterVersion, d upgrade.TenantDeps,
 ) error {
+	if true {
+		return nil
+	}
 
 	for step, stmt := range []string{backfillJobInfoPayloadStmt, backfillJobInfoProgressStmt} {
 		var resumeAfter int
