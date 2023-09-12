@@ -122,17 +122,27 @@ package ctxgroup
 import (
 	"context"
 	"fmt"
+	"sync"
 
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/errors/withstack"
-
-	"golang.org/x/sync/errgroup"
 )
 
 // Group wraps errgroup.
 type Group struct {
-	wrapped *errgroup.Group
-	ctx     context.Context
+	ctx    context.Context
+	cancel func(error)
+
+	wg sync.WaitGroup
+
+	errOnce sync.Once
+	err     error
+
+	panicMu struct {
+		syncutil.Mutex
+		err error
+	}
 }
 
 // Wait blocks until all function calls from the Go method have returned, then
@@ -140,33 +150,40 @@ type Group struct {
 // after the context (originally supplied to WithContext) is canceled, Wait
 // returns an error, even if no Go invocation did. In particular, calling
 // Wait() after Done has been closed is guaranteed to return an error.
-func (g Group) Wait() error {
+func (g *Group) Wait() error {
 	if g.ctx == nil {
 		return nil
 	}
-	ctxErr := g.ctx.Err()
-	err := g.wrapped.Wait()
-	if err != nil {
-		if recovered := (*ErrTaskPanic)(nil); errors.As(err, &recovered) {
-			panic(recovered)
-		}
-		return err
+
+	g.wg.Wait()
+
+	if g.cancel != nil {
+		g.cancel(g.err)
 	}
-	return ctxErr
+
+	if g.panicMu.err != nil {
+		panic(g.panicMu.err)
+	}
+
+	if g.err != nil {
+		return g.err
+	}
+
+	return g.ctx.Err()
 }
 
 // WithContext returns a new Group and an associated Context derived from ctx.
 func WithContext(ctx context.Context) Group {
-	grp, ctx := errgroup.WithContext(ctx)
+	ctx, cancel := context.WithCancelCause(ctx)
 	return Group{
-		wrapped: grp,
-		ctx:     ctx,
+		cancel: cancel,
+		ctx:    ctx,
 	}
 }
 
 // Go calls the given function in a new goroutine.
-func (g Group) Go(f func() error) {
-	g.wrapped.Go(f)
+func (g *Group) Go(f func() error) {
+	g.GoCtx(func(_ context.Context) error { return f() })
 }
 
 // ErrTaskPanic is used to wrap a panic thrown by a task in the group. It is
@@ -184,20 +201,33 @@ func (e ErrTaskPanic) Error() string {
 }
 
 // GoCtx calls the given function in a new goroutine.
-// If the function panics before another function has returned an error, calling
-// Wait() will panic with the original panic wrapped in ErrTaskPanic so as to
-// capture its original stack. NB: if another task in the group has already
-// returned an error, the panic will instead be recovered and ignored as the
-// error slot in the underlying errgroup is already used.
-func (g Group) GoCtx(f func(ctx context.Context) error) {
-	g.wrapped.Go(func() (err error) {
+//
+// If the function panics, calling Wait() will panic with the original panic,
+// wrapped in ErrTaskPanic so as to capture its original stack. If multiple
+// tasks panic, the wrapping errors are combined.
+func (g *Group) GoCtx(f func(ctx context.Context) error) {
+	g.wg.Add(1)
+	go func() {
+		defer g.wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
-				err = withstack.WithStack(&ErrTaskPanic{Payload: r})
+				g.panicMu.Lock()
+				defer g.panicMu.Unlock()
+				panicErr := withstack.WithStack(&ErrTaskPanic{Payload: r})
+				g.panicMu.err = errors.CombineErrors(panicErr, g.panicMu.err)
+				g.cancel(panicErr)
 			}
 		}()
-		return f(g.ctx)
-	})
+
+		if err := f(g.ctx); err != nil {
+			g.errOnce.Do(func() {
+				g.err = err
+				if g.cancel != nil {
+					g.cancel(g.err)
+				}
+			})
+		}
+	}()
 }
 
 // GroupWorkers runs num worker go routines in an errgroup.
