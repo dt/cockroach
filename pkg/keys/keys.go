@@ -881,6 +881,9 @@ const TODOColFamMarker = NoColFamMarker
 // the passed key.
 func MakeFamilyKey(key []byte, famID uint32, marker FamilyMarkerVersion) []byte {
 	if famID == 0 {
+		if marker == WithColFamMarker {
+			return encoding.EncodeColumnFamKeyMarker(key, true)
+		}
 		// As an optimization, family 0 is encoded without a length suffix.
 		return encoding.EncodeUvarintAscending(key, 0)
 	}
@@ -889,7 +892,12 @@ func MakeFamilyKey(key []byte, famID uint32, marker FamilyMarkerVersion) []byte 
 	// Note that we assume that `len(key)-size` will always be encoded to a
 	// single byte by EncodeUvarint. This is currently always true because the
 	// varint encoding will encode 1-9 bytes.
-	return encoding.EncodeUvarintAscending(key, uint64(len(key)-size))
+	key = encoding.EncodeUvarintAscending(key, uint64(len(key)-size))
+	if marker == WithColFamMarker {
+		key = encoding.EncodeColumnFamKeyMarker(key, false)
+	}
+	return key
+
 }
 
 // DecodeFamilyKey returns the family ID in the given row key. Returns an error
@@ -901,6 +909,11 @@ func DecodeFamilyKey(key []byte) (uint32, error) {
 	}
 	if n <= 0 || n >= len(key) {
 		return 0, errors.Errorf("invalid row prefix, got prefix length %d for key %s", n, key)
+	}
+	if encoding.PeekType(key[n:]) == encoding.ColFamily {
+		if _, zero, _ := encoding.DecodeColFamilyMarker(key[n:]); zero {
+			return 0, nil
+		}
 	}
 	_, colFamilyID, err := encoding.DecodeUvarintAscending(key[n:])
 	if err != nil {
@@ -974,6 +987,14 @@ func GetRowPrefixLength(key roachpb.Key) (int, error) {
 	// and thus the length of the column family ID data will fit in a single
 	// byte.
 	colFamIDLenByte := sqlKey[sqlN-1:]
+	if encoding.PeekType(colFamIDLenByte) == encoding.ColFamily {
+		_, zero, _ := encoding.DecodeColFamilyMarker(colFamIDLenByte)
+		if zero {
+			return n - 1, nil
+		}
+		n -= 1 // subtract the marker byte and then move on to decode the len.
+		colFamIDLenByte = sqlKey[sqlN-2:]
+	}
 	if encoding.PeekType(colFamIDLenByte) != encoding.Int {
 		// The last byte is not a valid column family ID suffix.
 		return 0, errors.Errorf("%s: not a valid table key", key)

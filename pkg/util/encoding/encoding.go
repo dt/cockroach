@@ -139,6 +139,8 @@ const (
 	jsonTrueKeyDescendingMarker       = jsonFalseKeyDescendingMarker - 1
 	jsonArrayKeyDescendingMarker      = jsonTrueKeyDescendingMarker - 1
 	jsonObjectKeyDescendingMarker     = jsonArrayKeyDescendingMarker - 1
+	columnFamily0Marker               = jsonEmptyArrayKeyDescendingMarker + 1
+	columnFamilyMarker                = columnFamily0Marker + 1
 
 	// Terminators for JSON Key encoding.
 	jsonKeyTerminator           byte = 0x00
@@ -1780,6 +1782,7 @@ const (
 	// Special case
 	JsonEmptyArray     Type = 42
 	JsonEmptyArrayDesc Type = 43
+	ColFamily          Type = 44
 )
 
 // typMap maps an encoded type byte to a decoded Type. It's got 256 slots, one
@@ -1882,6 +1885,8 @@ func slowPeekType(b []byte) Type {
 			return Decimal
 		case m == voidMarker:
 			return Void
+		case m == columnFamily0Marker, m == columnFamilyMarker:
+			return ColFamily
 		}
 	}
 	return Unknown
@@ -1974,7 +1979,7 @@ func PeekLength(b []byte) (int, error) {
 		floatNaN, floatNaNDesc, floatZero, decimalZero, byte(True), byte(False),
 		emptyArray, voidMarker, jsonNullKeyMarker, jsonNullKeyDescendingMarker,
 		jsonFalseKeyMarker, jsonFalseKeyDescendingMarker, jsonTrueKeyMarker,
-		jsonTrueKeyDescendingMarker:
+		jsonTrueKeyDescendingMarker, columnFamily0Marker, columnFamilyMarker:
 		// ascendingNullWithinArrayKey and descendingNullWithinArrayKey also
 		// contain the same byte values as encodedNotNull and encodedNotNullDesc
 		// respectively, but they cannot be included explicitly in the case
@@ -2376,6 +2381,11 @@ func prettyPrintFirstValue(dir Direction, b []byte) ([]byte, string, error) {
 			return b, "", err
 		}
 		return b, d.StringNanos(), nil
+	case ColFamily:
+		if b[0] == columnFamily0Marker {
+			return b[1:], "CF0", nil
+		}
+		return b[1:], "CF", nil
 	default:
 		if len(b) >= 1 {
 			switch b[0] {
@@ -3675,6 +3685,23 @@ func IsJSONKeyDone(buf []byte, dir Direction) bool {
 		expected = jsonKeyDescendingTerminator
 	}
 	return buf[0] == expected
+}
+
+// EncodeColumnFamKeyMarker adds a Column Family key encoding marker
+// to buf and returns the new buffer.
+func EncodeColumnFamKeyMarker(buf []byte, isZero bool) []byte {
+	if isZero {
+		return append(buf, columnFamily0Marker)
+	}
+	return append(buf, columnFamilyMarker)
+}
+
+// DecodeColFamilyMarker TODO
+func DecodeColFamilyMarker(b []byte) ([]byte, bool, error) {
+	if PeekType(b) != ColFamily {
+		return nil, false, errors.AssertionFailedf("not a column family marker")
+	}
+	return b[1:], b[0] == columnFamily0Marker, nil
 }
 
 // BytesNext returns the next possible byte slice, using the extra capacity
