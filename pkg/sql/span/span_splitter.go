@@ -202,7 +202,7 @@ func (s *Splitter) ExistenceCheckSpan(
 		// If it is safe to split this lookup into multiple families, generate a
 		// point lookup for family 0. Because we are just checking for existence, we
 		// only need family 0.
-		key := keys.MakeFamilyKey(span.Key, 0 /* famID */)
+		key := keys.MakeFamilyKey(span.Key, 0 /* famID */, keys.TODOColFamMarker)
 		return roachpb.Span{Key: key, EndKey: roachpb.Key(key).PrefixEnd()}
 	}
 	return span

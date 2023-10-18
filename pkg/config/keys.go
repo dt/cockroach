@@ -32,7 +32,7 @@ func MakeZoneKeyPrefix(codec keys.SQLCodec, id descpb.ID) roachpb.Key {
 // MakeZoneKey returns the key for a given id's entry in the system.zones table.
 func MakeZoneKey(codec keys.SQLCodec, id descpb.ID) roachpb.Key {
 	k := MakeZoneKeyPrefix(codec, id)
-	return keys.MakeFamilyKey(k, keys.ZonesTableConfigColFamID)
+	return keys.MakeFamilyKey(k, keys.ZonesTableConfigColFamID, keys.NoColFamMarker)
 }
 
 // DecodeObjectID decodes the object ID for the system-tenant from

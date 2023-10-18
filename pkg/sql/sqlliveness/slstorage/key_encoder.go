@@ -51,7 +51,7 @@ func (e *rbrEncoder) encode(session sqlliveness.SessionID) (roachpb.Key, error) 
 	key := e.indexPrefix()
 	key = encoding.EncodeBytesAscending(key, region)
 	key = encoding.EncodeBytesAscending(key, session.UnsafeBytes())
-	return keys.MakeFamilyKey(key, columnFamilyID), nil
+	return keys.MakeFamilyKey(key, columnFamilyID, keys.NoColFamMarker), nil
 }
 
 func (e *rbrEncoder) decode(key roachpb.Key) (sqlliveness.SessionID, error) {
@@ -86,7 +86,7 @@ func (e *rbtEncoder) encode(id sqlliveness.SessionID) (roachpb.Key, error) {
 
 	key := e.indexPrefix()
 	key = encoding.EncodeBytesAscending(key, id.UnsafeBytes())
-	return keys.MakeFamilyKey(key, columnFamilyID), nil
+	return keys.MakeFamilyKey(key, columnFamilyID, keys.NoColFamMarker), nil
 }
 
 func (e *rbtEncoder) decode(key roachpb.Key) (sqlliveness.SessionID, error) {

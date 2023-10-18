@@ -95,7 +95,7 @@ func (c rbrKeyCodec) makeRegionPrefix(region []byte) roachpb.Key {
 func (c rbrKeyCodec) encodeKey(region []byte, instanceID base.SQLInstanceID) roachpb.Key {
 	key := c.makeRegionPrefix(region)
 	key = encoding.EncodeVarintAscending(key, int64(instanceID))
-	key = keys.MakeFamilyKey(key, 0)
+	key = keys.MakeFamilyKey(key, 0, keys.NoColFamMarker)
 	return key
 }
 
@@ -134,7 +134,7 @@ func (c rbtKeyCodec) makeRegionPrefix(region []byte) roachpb.Key {
 func (c *rbtKeyCodec) encodeKey(_ []byte, instanceID base.SQLInstanceID) roachpb.Key {
 	key := c.indexPrefix.Clone()
 	key = encoding.EncodeVarintAscending(key, int64(instanceID))
-	return keys.MakeFamilyKey(key, 0)
+	return keys.MakeFamilyKey(key, 0, keys.NoColFamMarker)
 }
 
 func (c *rbtKeyCodec) decodeKey(key roachpb.Key) (region []byte, id base.SQLInstanceID, err error) {

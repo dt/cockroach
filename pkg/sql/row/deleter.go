@@ -153,7 +153,7 @@ func (rd *Deleter) DeleteRow(
 			called = true
 		}
 		familyID := family.ID
-		rd.key = keys.MakeFamilyKey(primaryIndexKey, uint32(familyID))
+		rd.key = keys.MakeFamilyKey(primaryIndexKey, uint32(familyID), keys.TODOColFamMarker)
 		if traceKV {
 			log.VEventf(ctx, 2, "Del %s", keys.PrettyPrint(rd.Helper.primIndexValDirs, rd.key))
 		}

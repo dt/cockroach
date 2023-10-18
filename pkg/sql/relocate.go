@@ -107,7 +107,7 @@ func (n *relocateNode) Next(params runParams) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	rowKey = keys.MakeFamilyKey(rowKey, 0)
+	rowKey = keys.MakeFamilyKey(rowKey, 0, keys.TODOColFamMarker)
 
 	rKey := keys.MustAddr(rowKey)
 	span := roachpb.Span{

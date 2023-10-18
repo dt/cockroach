@@ -227,7 +227,7 @@ func EncodeNameKey(codec keys.SQLCodec, nameKey catalog.NameKey) roachpb.Key {
 	r = encoding.EncodeUvarintAscending(r, uint64(nameKey.GetParentSchemaID()))
 	if nameKey.GetName() != "" {
 		r = encoding.EncodeBytesAscending(r, []byte(nameKey.GetName()))
-		r = keys.MakeFamilyKey(r, catconstants.NamespaceTableFamilyID)
+		r = keys.MakeFamilyKey(r, catconstants.NamespaceTableFamilyID, keys.NoColFamMarker)
 	}
 	return r
 }

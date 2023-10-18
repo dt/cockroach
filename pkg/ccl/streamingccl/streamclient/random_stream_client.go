@@ -598,7 +598,7 @@ func makeRandomKey(
 	if err != nil {
 		panic(err)
 	}
-	k = keys.MakeFamilyKey(k, uint32(tableDesc.Families[0].ID))
+	k = keys.MakeFamilyKey(k, uint32(tableDesc.Families[0].ID), keys.TODOColFamMarker)
 
 	k = rekey(config.tenantID, k)
 

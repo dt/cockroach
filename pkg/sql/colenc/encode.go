@@ -482,7 +482,7 @@ func (b *BatchEncoder) encodeSecondaryIndexNoFamilies(ind catalog.Index, kys []r
 		}
 		// If we aren't encoding index keys with families, all index keys use the
 		// sentinel family 0.
-		kys[row] = keys.MakeFamilyKey(kys[row], 0)
+		kys[row] = keys.MakeFamilyKey(kys[row], 0, keys.TODOColFamMarker)
 	}
 	values := b.values
 	if ind.IsUnique() {
@@ -660,7 +660,7 @@ func (b *BatchEncoder) initFamily(familyIndex, familyID int) {
 			if b.keyPrefixOffsets != nil {
 				b.keyPrefixOffsets[row] = int32(len(kys[row]))
 			}
-			kys[row] = keys.MakeFamilyKey(kys[row], uint32(familyID))
+			kys[row] = keys.MakeFamilyKey(kys[row], uint32(familyID), keys.TODOColFamMarker)
 		}
 	} else {
 		// For the rest of families set keys for new family up by copying the old
@@ -680,7 +680,7 @@ func (b *BatchEncoder) initFamily(familyIndex, familyID int) {
 			kys[row] = keyBuf[offset : offset : b.keyBufSize+offset]
 			// Append prefix.
 			kys[row] = append(kys[row], prefix...)
-			kys[row] = keys.MakeFamilyKey(kys[row], uint32(familyID))
+			kys[row] = keys.MakeFamilyKey(kys[row], uint32(familyID), keys.TODOColFamMarker)
 			// Reset values.
 			b.values[row] = b.values[row][:0]
 			// Also reset lastColIDs.

@@ -864,9 +864,22 @@ func MakeTableIDIndexID(key []byte, tableID uint32, indexID uint32) []byte {
 	return key
 }
 
+// FamilyMarkerVersion indicates which version of the column family encoding is
+// in use for a given table. One version or the other must be used for an index
+// to ensure that there is a single canonical encoding for a given tuple in that
+// index for the purposes of uniqueness.
+type FamilyMarkerVersion bool
+
+// NoColFamMarker and WithColFamMarker are passed to MakeFamilyKey to indicate
+// whether the family key should use the unique column family byte suffix marker
+// after the encoded varint family ID length.
+const WithColFamMarker, NoColFamMarker FamilyMarkerVersion = false, true
+
+const TODOColFamMarker = NoColFamMarker
+
 // MakeFamilyKey returns the key for the family in the given row by appending to
 // the passed key.
-func MakeFamilyKey(key []byte, famID uint32) []byte {
+func MakeFamilyKey(key []byte, famID uint32, marker FamilyMarkerVersion) []byte {
 	if famID == 0 {
 		// As an optimization, family 0 is encoded without a length suffix.
 		return encoding.EncodeUvarintAscending(key, 0)

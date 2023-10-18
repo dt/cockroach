@@ -309,7 +309,7 @@ func (sa *spanAssembler) Release() {
 func getColFamilyEncodings(splitFamilyIDs []descpb.FamilyID) (startKeys, endKeys []roachpb.Key) {
 	for i, familyID := range splitFamilyIDs {
 		var key roachpb.Key
-		key = keys.MakeFamilyKey(key, uint32(familyID))
+		key = keys.MakeFamilyKey(key, uint32(familyID), keys.TODOColFamMarker)
 		if i > 0 && familyID-1 == splitFamilyIDs[i-1] && endKeys != nil {
 			// This column family is adjacent to the previous one. We can merge
 			// the two spans into one.

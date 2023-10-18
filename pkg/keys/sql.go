@@ -221,7 +221,7 @@ func (e sqlEncoder) DescMetadataPrefix() roachpb.Key {
 func (e sqlEncoder) DescMetadataKey(descID uint32) roachpb.Key {
 	k := e.DescMetadataPrefix()
 	k = encoding.EncodeUvarintAscending(k, uint64(descID))
-	return MakeFamilyKey(k, DescriptorTableDescriptorColFamID)
+	return MakeFamilyKey(k, DescriptorTableDescriptorColFamID, NoColFamMarker)
 }
 
 // TenantMetadataKey returns the key for the tenant metadata in the
@@ -229,14 +229,14 @@ func (e sqlEncoder) DescMetadataKey(descID uint32) roachpb.Key {
 func (e sqlEncoder) TenantMetadataKey(tenID roachpb.TenantID) roachpb.Key {
 	k := e.IndexPrefix(TenantsTableID, TenantsTablePrimaryKeyIndexID)
 	k = encoding.EncodeUvarintAscending(k, tenID.ToUint64())
-	return MakeFamilyKey(k, 0)
+	return MakeFamilyKey(k, 0, NoColFamMarker)
 }
 
 // SequenceKey returns the key used to store the value of a sequence.
 func (e sqlEncoder) SequenceKey(tableID uint32) roachpb.Key {
 	k := e.IndexPrefix(tableID, SequenceIndexID)
-	k = encoding.EncodeUvarintAscending(k, 0)    // Primary key value
-	k = MakeFamilyKey(k, SequenceColumnFamilyID) // Column family
+	k = encoding.EncodeUvarintAscending(k, 0)                    // Primary key value
+	k = MakeFamilyKey(k, SequenceColumnFamilyID, NoColFamMarker) // Column family
 	return k
 }
 
