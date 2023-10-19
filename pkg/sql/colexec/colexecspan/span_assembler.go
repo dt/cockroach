@@ -41,7 +41,7 @@ func NewColSpanAssembler(
 ) ColSpanAssembler {
 	sa := spanAssemblerPool.Get().(*spanAssembler)
 	if len(splitFamilyIDs) > 0 {
-		sa.colFamStartKeys, sa.colFamEndKeys = getColFamilyEncodings(splitFamilyIDs)
+		sa.colFamStartKeys, sa.colFamEndKeys = getColFamilyEncodings(splitFamilyIDs, keys.FamilyMarkerVersion(fetchSpec.UsesColumnFamilyMarker))
 		for i := range sa.colFamStartKeys {
 			sa.colFamStartKeysTotalLength += len(sa.colFamStartKeys[i])
 		}
@@ -306,10 +306,12 @@ func (sa *spanAssembler) Release() {
 // getColFamilyEncodings returns two lists of keys of the same length. Each pair
 // of keys at the same index corresponds to the suffixes of the start and end
 // keys of a span over a specific column family (or adjacent column families).
-func getColFamilyEncodings(splitFamilyIDs []descpb.FamilyID) (startKeys, endKeys []roachpb.Key) {
+func getColFamilyEncodings(
+	splitFamilyIDs []descpb.FamilyID, familyMarker keys.FamilyMarkerVersion,
+) (startKeys, endKeys []roachpb.Key) {
 	for i, familyID := range splitFamilyIDs {
 		var key roachpb.Key
-		key = keys.MakeFamilyKey(key, uint32(familyID), keys.TODOColFamMarker)
+		key = keys.MakeFamilyKey(key, uint32(familyID), familyMarker)
 		if i > 0 && familyID-1 == splitFamilyIDs[i-1] && endKeys != nil {
 			// This column family is adjacent to the previous one. We can merge
 			// the two spans into one.

@@ -290,7 +290,7 @@ func (b *BatchEncoder) encodePK(ctx context.Context, ind catalog.Index) error {
 			colexecerror.InternalError(errors.AssertionFailedf("invalid family sorted column id map"))
 		}
 
-		b.initFamily(familyIndex, int(family.ID))
+		b.initFamily(familyIndex, int(family.ID), ind.UsesColumnFamilyMarkerEncoding())
 
 		// We need to ensure that column family 0 contains extra metadata, like composite primary key values.
 		// Additionally, the decoders expect that column family 0 is encoded with a TUPLE value tag, so we
@@ -482,7 +482,7 @@ func (b *BatchEncoder) encodeSecondaryIndexNoFamilies(ind catalog.Index, kys []r
 		}
 		// If we aren't encoding index keys with families, all index keys use the
 		// sentinel family 0.
-		kys[row] = keys.MakeFamilyKey(kys[row], 0, keys.TODOColFamMarker)
+		kys[row] = keys.MakeFamilyKey(kys[row], 0, ind.UsesColumnFamilyMarkerEncoding())
 	}
 	values := b.values
 	if ind.IsUnique() {
@@ -525,7 +525,7 @@ func (b *BatchEncoder) encodeSecondaryIndexWithFamilies(
 			continue
 		}
 		sort.Sort(rowenc.ByID(storedColsInFam))
-		b.initFamily(familyIndex, familyID)
+		b.initFamily(familyIndex, familyID, ind.UsesColumnFamilyMarkerEncoding())
 		values := b.values
 		if ind.IsUnique() && familyID == 0 {
 			// Note that a unique secondary index that contains a NULL column value
@@ -647,7 +647,7 @@ func encodeColumns[T []byte | roachpb.Key](
 	return &nulls, nil
 }
 
-func (b *BatchEncoder) initFamily(familyIndex, familyID int) {
+func (b *BatchEncoder) initFamily(familyIndex, familyID int, useMarker keys.FamilyMarkerVersion) {
 	kys := b.keys
 	if familyIndex == 0 {
 		// First family, set up keyPrefixOffsets and append family ID.
@@ -660,7 +660,7 @@ func (b *BatchEncoder) initFamily(familyIndex, familyID int) {
 			if b.keyPrefixOffsets != nil {
 				b.keyPrefixOffsets[row] = int32(len(kys[row]))
 			}
-			kys[row] = keys.MakeFamilyKey(kys[row], uint32(familyID), keys.TODOColFamMarker)
+			kys[row] = keys.MakeFamilyKey(kys[row], uint32(familyID), useMarker)
 		}
 	} else {
 		// For the rest of families set keys for new family up by copying the old
@@ -680,7 +680,7 @@ func (b *BatchEncoder) initFamily(familyIndex, familyID int) {
 			kys[row] = keyBuf[offset : offset : b.keyBufSize+offset]
 			// Append prefix.
 			kys[row] = append(kys[row], prefix...)
-			kys[row] = keys.MakeFamilyKey(kys[row], uint32(familyID), keys.TODOColFamMarker)
+			kys[row] = keys.MakeFamilyKey(kys[row], uint32(familyID), useMarker)
 			// Reset values.
 			b.values[row] = b.values[row][:0]
 			// Also reset lastColIDs.

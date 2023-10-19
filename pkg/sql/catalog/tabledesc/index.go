@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
@@ -394,6 +395,10 @@ func (w index) GetCompositeColumnID(compositeColumnOrdinal int) descpb.ColumnID 
 // the merge process. See #75720 for further details.
 func (w index) UseDeletePreservingEncoding() bool {
 	return w.desc.UseDeletePreservingEncoding && !w.maybeMutation.DeleteOnly()
+}
+
+func (w index) UsesColumnFamilyMarkerEncoding() keys.FamilyMarkerVersion {
+	return keys.FamilyMarkerVersion(w.desc.UsesColumnFamilyMarkerEncoding)
 }
 
 // ForcePut forces all writes to use Put rather than CPut or InitPut.

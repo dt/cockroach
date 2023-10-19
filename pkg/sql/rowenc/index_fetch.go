@@ -36,16 +36,17 @@ func InitIndexFetchSpec(
 ) error {
 	oldFetchedCols := s.FetchedColumns
 	*s = fetchpb.IndexFetchSpec{
-		Version:             fetchpb.IndexFetchSpecVersionInitial,
-		TableID:             table.GetID(),
-		TableName:           table.GetName(),
-		IndexID:             index.GetID(),
-		IndexName:           index.GetName(),
-		IsSecondaryIndex:    !index.Primary(),
-		IsUniqueIndex:       index.IsUnique(),
-		EncodingType:        index.GetEncodingType(),
-		NumKeySuffixColumns: uint32(index.NumKeySuffixColumns()),
-		GeoConfig:           index.GetGeoConfig(),
+		Version:                fetchpb.IndexFetchSpecVersionInitial,
+		TableID:                table.GetID(),
+		TableName:              table.GetName(),
+		IndexID:                index.GetID(),
+		IndexName:              index.GetName(),
+		IsSecondaryIndex:       !index.Primary(),
+		IsUniqueIndex:          index.IsUnique(),
+		EncodingType:           index.GetEncodingType(),
+		NumKeySuffixColumns:    uint32(index.NumKeySuffixColumns()),
+		GeoConfig:              index.GetGeoConfig(),
+		UsesColumnFamilyMarker: bool(index.UsesColumnFamilyMarkerEncoding()),
 	}
 
 	maxKeysPerRow := table.IndexKeysPerRow(index)

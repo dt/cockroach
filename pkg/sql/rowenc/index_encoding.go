@@ -322,12 +322,15 @@ func NeededColumnFamilyIDs(
 //
 // The function accepts a slice of spans to append to.
 func SplitRowKeyIntoFamilySpans(
-	appendTo roachpb.Spans, key roachpb.Key, neededFamilies []descpb.FamilyID,
+	appendTo roachpb.Spans,
+	key roachpb.Key,
+	neededFamilies []descpb.FamilyID,
+	familyMarker keys.FamilyMarkerVersion,
 ) roachpb.Spans {
 	key = key[:len(key):len(key)] // avoid mutation and aliasing
 	for i, familyID := range neededFamilies {
 		var famSpan roachpb.Span
-		famSpan.Key = keys.MakeFamilyKey(key, uint32(familyID), keys.TODOColFamMarker)
+		famSpan.Key = keys.MakeFamilyKey(key, uint32(familyID), familyMarker)
 		// Don't set the EndKey yet, because a column family on its own can be
 		// fetched using a GetRequest.
 		if i > 0 && familyID == neededFamilies[i-1]+1 {
@@ -1093,7 +1096,7 @@ func EncodePrimaryIndex(
 			entryValue = entryValue[:0]
 			columnsToEncode = columnsToEncode[:0]
 		}
-		familyKey := keys.MakeFamilyKey(indexKey, uint32(family.ID), keys.TODOColFamMarker)
+		familyKey := keys.MakeFamilyKey(indexKey, uint32(family.ID), index.UsesColumnFamilyMarkerEncoding())
 		// The decoders expect that column family 0 is encoded with a TUPLE value tag, so we
 		// don't want to use the untagged value encoding.
 		if len(family.ColumnIDs) == 1 && family.ColumnIDs[0] == family.DefaultColumnID && family.ID != 0 {
@@ -1381,7 +1384,7 @@ func encodeSecondaryIndexWithFamilies(
 
 		sort.Sort(ByID(storedColsInFam))
 
-		key = keys.MakeFamilyKey(key, uint32(familyID), keys.TODOColFamMarker)
+		key = keys.MakeFamilyKey(key, uint32(familyID), index.UsesColumnFamilyMarkerEncoding())
 		if index.IsUnique() && familyID == 0 {
 			// Note that a unique secondary index that contains a NULL column value
 			// will have extraKey appended to the key and stored in the value. We
@@ -1436,7 +1439,7 @@ func encodeSecondaryIndexNoFamilies(
 		err   error
 	)
 	// If we aren't encoding index keys with families, all index keys use the sentinel family 0.
-	key = keys.MakeFamilyKey(key, 0, keys.TODOColFamMarker)
+	key = keys.MakeFamilyKey(key, 0, index.UsesColumnFamilyMarkerEncoding())
 	if index.IsUnique() {
 		// Note that a unique secondary index that contains a NULL column value
 		// will have extraKey appended to the key and stored in the value. We

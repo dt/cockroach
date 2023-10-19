@@ -873,7 +873,7 @@ type FamilyMarkerVersion bool
 // NoColFamMarker and WithColFamMarker are passed to MakeFamilyKey to indicate
 // whether the family key should use the unique column family byte suffix marker
 // after the encoded varint family ID length.
-const WithColFamMarker, NoColFamMarker FamilyMarkerVersion = false, true
+const WithColFamMarker, NoColFamMarker FamilyMarkerVersion = true, false
 
 const TODOColFamMarker = NoColFamMarker
 

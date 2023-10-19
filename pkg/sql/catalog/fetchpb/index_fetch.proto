@@ -131,4 +131,8 @@ message IndexFetchSpec {
   //
   // Any other column IDs present in the fetched KVs will be ignored.
   repeated Column fetched_columns = 15 [(gogoproto.nullable) = false];
+
+  optional bool uses_column_family_marker = 17 [(gogoproto.nullable) = false];
+
+  // Next ID: 18.
 }

@@ -127,7 +127,7 @@ func prepareInsertOrUpdateBatch(
 			primaryIndexKey = primaryIndexKey[:len(primaryIndexKey):len(primaryIndexKey)]
 		}
 
-		*kvKey = keys.MakeFamilyKey(primaryIndexKey, uint32(family.ID), keys.TODOColFamMarker)
+		*kvKey = keys.MakeFamilyKey(primaryIndexKey, uint32(family.ID), helper.TableDesc.GetPrimaryIndex().UsesColumnFamilyMarkerEncoding())
 		// We need to ensure that column family 0 contains extra metadata, like composite primary key values.
 		// Additionally, the decoders expect that column family 0 is encoded with a TUPLE value tag, so we
 		// don't want to use the untagged value encoding.

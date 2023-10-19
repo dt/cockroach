@@ -34,6 +34,8 @@ type Splitter struct {
 	// neededFamilies contains the family IDs into which spans will be split, or
 	// nil if splitting is not possible.
 	neededFamilies []descpb.FamilyID
+
+	familyMarker keys.FamilyMarkerVersion
 }
 
 // NoopSplitter returns a splitter that never splits spans.
@@ -114,6 +116,7 @@ func MakeSplitterForDelete(
 	return Splitter{
 		numKeyColumns:  index.NumKeyColumns(),
 		neededFamilies: neededFamilies,
+		familyMarker:   index.UsesColumnFamilyMarkerEncoding(),
 	}
 }
 
@@ -124,7 +127,9 @@ func MakeSplitterForDelete(
 //
 // This should only be used when the conditions checked by MakeSplitter are
 // already known to be satisfied.
-func MakeSplitterWithFamilyIDs(numKeyColumns int, familyIDs []descpb.FamilyID) Splitter {
+func MakeSplitterWithFamilyIDs(
+	numKeyColumns int, familyIDs []descpb.FamilyID, familyMarker keys.FamilyMarkerVersion,
+) Splitter {
 	if len(familyIDs) == 0 {
 		return NoopSplitter()
 	}
@@ -138,6 +143,7 @@ func MakeSplitterWithFamilyIDs(numKeyColumns int, familyIDs []descpb.FamilyID) S
 	return Splitter{
 		numKeyColumns:  numKeyColumns,
 		neededFamilies: familyIDs,
+		familyMarker:   familyMarker,
 	}
 }
 
@@ -164,7 +170,7 @@ func (s *Splitter) MaybeSplitSpanIntoSeparateFamilies(
 	appendTo roachpb.Spans, span roachpb.Span, prefixLen int, containsNull bool,
 ) roachpb.Spans {
 	if s.CanSplitSpanIntoFamilySpans(prefixLen, containsNull) {
-		return rowenc.SplitRowKeyIntoFamilySpans(appendTo, span.Key, s.neededFamilies)
+		return rowenc.SplitRowKeyIntoFamilySpans(appendTo, span.Key, s.neededFamilies, s.familyMarker)
 	}
 	return append(appendTo, span)
 }
@@ -202,7 +208,7 @@ func (s *Splitter) ExistenceCheckSpan(
 		// If it is safe to split this lookup into multiple families, generate a
 		// point lookup for family 0. Because we are just checking for existence, we
 		// only need family 0.
-		key := keys.MakeFamilyKey(span.Key, 0 /* famID */, keys.TODOColFamMarker)
+		key := keys.MakeFamilyKey(span.Key, 0 /* famID */, s.familyMarker)
 		return roachpb.Span{Key: key, EndKey: roachpb.Key(key).PrefixEnd()}
 	}
 	return span

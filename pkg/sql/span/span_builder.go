@@ -34,8 +34,9 @@ import (
 // Builder is a single struct for generating key spans from Constraints, Datums,
 // encDatums, and InvertedSpans.
 type Builder struct {
-	evalCtx *eval.Context
-	codec   keys.SQLCodec
+	evalCtx      *eval.Context
+	codec        keys.SQLCodec
+	familyMarker keys.FamilyMarkerVersion
 
 	keyAndPrefixCols []fetchpb.IndexFetchSpec_KeyColumn
 
@@ -50,6 +51,7 @@ func (s *Builder) Init(
 ) {
 	s.evalCtx = evalCtx
 	s.codec = codec
+	s.familyMarker = index.UsesColumnFamilyMarkerEncoding()
 	s.keyAndPrefixCols = table.IndexFetchSpecKeyAndSuffixColumns(index)
 	s.KeyPrefix = rowenc.MakeIndexKeyPrefix(codec, table.GetID(), index.GetID())
 }
@@ -205,7 +207,7 @@ func (s *Builder) SpanFromDatumRow(
 // specific family. It is up to the caller to ensure that this is a safe operation,
 // by calling CanSplitSpanIntoFamilySpans before using it.
 func (s *Builder) SpanToPointSpan(span roachpb.Span, family descpb.FamilyID) roachpb.Span {
-	key := keys.MakeFamilyKey(span.Key, uint32(family), keys.TODOColFamMarker)
+	key := keys.MakeFamilyKey(span.Key, uint32(family), s.familyMarker)
 	return roachpb.Span{Key: key, EndKey: roachpb.Key(key).PrefixEnd()}
 }
 
@@ -301,7 +303,7 @@ func (s *Builder) appendSpansFromConstraintSpan(
 	// families, only scan the relevant column families, and use GetRequests
 	// instead of ScanRequests when doing the column family fetches.
 	if splitter.CanSplitSpanIntoFamilySpans(cs.StartKey().Length(), containsNull) && span.Key.Equal(span.EndKey) {
-		return rowenc.SplitRowKeyIntoFamilySpans(appendTo, span.Key, splitter.neededFamilies), nil
+		return rowenc.SplitRowKeyIntoFamilySpans(appendTo, span.Key, splitter.neededFamilies, s.familyMarker), nil
 	}
 
 	// We need to advance the end key if it is inclusive.

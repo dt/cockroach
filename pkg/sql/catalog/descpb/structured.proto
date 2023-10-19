@@ -511,7 +511,9 @@ message IndexDescriptor {
   // with index visibility in-between as partially not visible.
   optional double invisibility = 29 [(gogoproto.nullable) = false];
 
-  // Next ID: 30
+  optional bool uses_column_family_marker_encoding = 30 [(gogoproto.nullable) = false];
+
+  // Next ID: 31
 }
 
 // ConstraintToUpdate represents a constraint to be added to the table and

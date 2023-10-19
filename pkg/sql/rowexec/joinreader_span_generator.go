@@ -187,7 +187,7 @@ func (g *defaultSpanGenerator) init(
 	memAcc *mon.BoundAccount,
 ) error {
 	g.spanBuilder.InitWithFetchSpec(evalCtx, codec, fetchSpec)
-	g.spanSplitter = span.MakeSplitterWithFamilyIDs(len(fetchSpec.KeyFullColumns()), splitFamilyIDs)
+	g.spanSplitter = span.MakeSplitterWithFamilyIDs(len(fetchSpec.KeyFullColumns()), splitFamilyIDs, keys.FamilyMarkerVersion(fetchSpec.UsesColumnFamilyMarker))
 	g.lookupCols = lookupCols
 	if len(lookupCols) > len(fetchSpec.KeyAndSuffixColumns) {
 		return errors.AssertionFailedf(
@@ -389,7 +389,7 @@ func (g *multiSpanGenerator) init(
 	memAcc *mon.BoundAccount,
 ) (spansCanOverlap bool, _ error) {
 	g.spanBuilder.InitWithFetchSpec(evalCtx, codec, fetchSpec)
-	g.spanSplitter = span.MakeSplitterWithFamilyIDs(len(fetchSpec.KeyFullColumns()), splitFamilyIDs)
+	g.spanSplitter = span.MakeSplitterWithFamilyIDs(len(fetchSpec.KeyFullColumns()), splitFamilyIDs, keys.FamilyMarkerVersion(fetchSpec.UsesColumnFamilyMarker))
 	g.numInputCols = numInputCols
 	g.spanKeyToSpanID = make(map[string]int)
 	g.fetchedOrdToIndexKeyOrd = fetchedOrdToIndexKeyOrd

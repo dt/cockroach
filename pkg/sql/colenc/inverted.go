@@ -88,7 +88,7 @@ func (b *BatchEncoder) encodeInvertedSecondaryIndexNoFamiliesOneRow(
 ) error {
 	var value []byte
 	// If we aren't encoding index keys with families, all index keys use the sentinel family 0.
-	key = keys.MakeFamilyKey(key, 0, keys.TODOColFamMarker)
+	key = keys.MakeFamilyKey(key, 0, ind.UsesColumnFamilyMarkerEncoding())
 	cols := rowenc.GetValueColumns(ind)
 	var err error
 	value, err = writeColumnValueOneRow(value, b.colMap, b.b.ColVecs(), cols, row+b.start)
