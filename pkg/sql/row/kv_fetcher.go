@@ -61,11 +61,14 @@ func newTxnKVFetcher(
 	lockTimeout time.Duration,
 	acc *mon.BoundAccount,
 	forceProductionKVBatchSize bool,
+	ext *fetchpb.IndexFetchSpec_ExternalRowData,
 ) *txnKVFetcher {
 	var sendFn sendFunc
 	var batchRequestsIssued int64
-	// Avoid the heap allocation by allocating sendFn specifically in the if.
-	if bsHeader == nil {
+	if ext != nil {
+		sendFn = makeExternalSpanSendFunc(ext, txn.DB())
+	} else if bsHeader == nil {
+		// Avoid the heap allocation by allocating sendFn specifically in the if.
 		sendFn = makeTxnKVFetcherDefaultSendFunc(txn, &batchRequestsIssued)
 	} else {
 		negotiated := false
@@ -129,10 +132,11 @@ func NewDirectKVBatchFetcher(
 	lockTimeout time.Duration,
 	acc *mon.BoundAccount,
 	forceProductionKVBatchSize bool,
+	ext *fetchpb.IndexFetchSpec_ExternalRowData,
 ) KVBatchFetcher {
 	f := newTxnKVFetcher(
 		txn, bsHeader, reverse, lockStrength, lockWaitPolicy, lockDurability,
-		lockTimeout, acc, forceProductionKVBatchSize,
+		lockTimeout, acc, forceProductionKVBatchSize, ext,
 	)
 	f.scanFormat = kvpb.COL_BATCH_RESPONSE
 	f.indexFetchSpec = spec
@@ -155,10 +159,11 @@ func NewKVFetcher(
 	lockTimeout time.Duration,
 	acc *mon.BoundAccount,
 	forceProductionKVBatchSize bool,
+	ext *fetchpb.IndexFetchSpec_ExternalRowData,
 ) *KVFetcher {
 	return newKVFetcher(newTxnKVFetcher(
 		txn, bsHeader, reverse, lockStrength, lockWaitPolicy, lockDurability,
-		lockTimeout, acc, forceProductionKVBatchSize,
+		lockTimeout, acc, forceProductionKVBatchSize, ext,
 	))
 }
 

@@ -592,6 +592,7 @@ func NewColIndexJoin(
 			flowCtx.EvalCtx.SessionData().LockTimeout,
 			kvFetcherMemAcc,
 			flowCtx.EvalCtx.TestingKnobs.ForceProductionValues,
+			spec.FetchSpec.External,
 		)
 	}
 

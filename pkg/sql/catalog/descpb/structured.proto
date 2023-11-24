@@ -1203,7 +1203,20 @@ message TableDescriptor {
   // SchemaLocked, if set, disallows schema change to this table.
   optional bool schema_locked = 58 [(gogoproto.nullable) = false, (gogoproto.customname) = "SchemaLocked"];
 
-  // Next ID: 59
+  optional ExternalRowData external = 59[(gogoproto.nullable) = true];
+
+  // Next ID: 60
+}
+
+// ExternalRowData indicates that the row data for this object is stored outside
+// the span of the object, either in some other span, such as a different tenant
+// or in wholly different storage, such as a backup.
+message ExternalRowData {
+  option (gogoproto.equal) = true;
+  optional util.hlc.Timestamp as_of = 1 [(gogoproto.nullable) = false];
+  optional uint64 tenant_id = 2 [(gogoproto.nullable) = false,  (gogoproto.customname) = "TenantID"];
+  optional uint32 table_id = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "TableID", (gogoproto.casttype) = "ID"];
+  // optional uint64 index_id = 4 [(gogoproto.nullable) = false];
 }
 
 // SurvivalGoal is the survival goal for a database.

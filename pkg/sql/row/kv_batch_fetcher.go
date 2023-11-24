@@ -11,12 +11,14 @@
 package row
 
 import (
+	"bytes"
 	"context"
 	"sync/atomic"
 	"time"
 	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
@@ -281,6 +283,55 @@ func makeTxnKVFetcherDefaultSendFunc(txn *kv.Txn, batchRequestsIssued *int64) se
 		}
 		*batchRequestsIssued++
 		return res, nil
+	}
+}
+
+func makeExternalSpanSendFunc(ext *fetchpb.IndexFetchSpec_ExternalRowData, db *kv.DB) sendFunc {
+	var oldPrefix, newPrefix []byte
+
+	rewrite := func(k roachpb.Key) (roachpb.Key, error) {
+		if len(oldPrefix) == 0 || !bytes.HasPrefix(k, oldPrefix) {
+			// TODO(dt): use spec.KeyPrefixLength?
+			suffix, _, err := keys.DecodeTenantPrefix(k)
+			if err != nil {
+				return nil, err
+			}
+			remainder, _, index, err := keys.DecodeTableIDIndexID(suffix)
+			if err != nil {
+				return nil, err
+			}
+			oldPrefix = append([]byte{}, k[:len(k)-len(remainder)]...)
+			newPrefix = keys.MakeSQLCodec(roachpb.MustMakeTenantID(ext.TenantID)).IndexPrefix(uint32(ext.TableID), index)
+		}
+		// TODO(dt): avoid alloc if it fits.
+		suffix := k[len(oldPrefix):]
+		return append(newPrefix, suffix...), nil
+	}
+
+	return func(
+		ctx context.Context,
+		ba *kvpb.BatchRequest,
+	) (*kvpb.BatchResponse, error) {
+		ba.Timestamp = ext.AsOf
+		for _, req := range ba.Requests {
+			switch r := req.GetInner().(type) {
+			case *kvpb.ScanRequest:
+				k, err := rewrite(r.RequestHeader.Key)
+				if err != nil {
+					return nil, err
+				}
+				r.RequestHeader.Key = k
+				k, err = rewrite(r.RequestHeader.EndKey)
+				if err != nil {
+					return nil, err
+				}
+				r.RequestHeader.EndKey = k
+			default:
+				return nil, errors.AssertionFailedf("request type %T unsupported for external row data", r)
+			}
+		}
+		res, err := db.NonTransactionalSender().Send(ctx, ba)
+		return res, err.GoError()
 	}
 }
 

@@ -637,3 +637,8 @@ func (desc *wrapper) ForEachUDTDependentForHydration(fn func(t *types.T) error) 
 func (desc *wrapper) IsSchemaLocked() bool {
 	return desc.SchemaLocked
 }
+
+// ExternalRowData implements the TableDescriptor interface.
+func (desc *wrapper) ExternalRowData() *descpb.ExternalRowData {
+	return desc.External
+}

@@ -447,7 +447,7 @@ func (rf *Fetcher) Init(ctx context.Context, args FetcherInitArgs) error {
 		}
 	}
 
-	if args.StreamingKVFetcher != nil {
+	if args.StreamingKVFetcher != nil && args.Spec.External == nil {
 		if args.WillUseKVProvider {
 			return errors.AssertionFailedf(
 				"StreamingKVFetcher is non-nil when WillUseKVProvider is true",
@@ -469,7 +469,11 @@ func (rf *Fetcher) Init(ctx context.Context, args FetcherInitArgs) error {
 			batchRequestsIssued:        &batchRequestsIssued,
 		}
 		if args.Txn != nil {
-			fetcherArgs.sendFn = makeTxnKVFetcherDefaultSendFunc(args.Txn, &batchRequestsIssued)
+			if args.Spec.External != nil {
+				fetcherArgs.sendFn = makeExternalSpanSendFunc(args.Spec.External, args.Txn.DB())
+			} else {
+				fetcherArgs.sendFn = makeTxnKVFetcherDefaultSendFunc(args.Txn, &batchRequestsIssued)
+			}
 			fetcherArgs.admission.requestHeader = args.Txn.AdmissionHeader()
 			fetcherArgs.admission.responseQ = args.Txn.DB().SQLKVResponseAdmissionQ
 			fetcherArgs.admission.pacerFactory = args.Txn.DB().AdmissionPacerFactory
@@ -494,6 +498,16 @@ func (rf *Fetcher) Init(ctx context.Context, args FetcherInitArgs) error {
 // Note that this resets the number of batch requests issued by the Fetcher.
 // Consider using GetBatchRequestsIssued if that information is needed.
 func (rf *Fetcher) SetTxn(txn *kv.Txn) error {
+	if rf.args.Spec.External != nil {
+		f, ok := rf.kvFetcher.KVBatchFetcher.(*txnKVFetcher)
+		if !ok {
+			return errors.AssertionFailedf(
+				"unexpectedly the KVBatchFetcher is %T and not *txnKVFetcher", rf.kvFetcher.KVBatchFetcher,
+			)
+		}
+		f.sendFn = makeExternalSpanSendFunc(rf.args.Spec.External, txn.DB())
+		return nil
+	}
 	var batchRequestsIssued int64
 	sendFn := makeTxnKVFetcherDefaultSendFunc(txn, &batchRequestsIssued)
 	return rf.setTxnAndSendFn(txn, sendFn)

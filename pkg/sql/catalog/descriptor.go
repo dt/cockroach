@@ -759,6 +759,10 @@ type TableDescriptor interface {
 	// IsSchemaLocked returns true if we don't allow performing schema changes
 	// on this table descriptor.
 	IsSchemaLocked() bool
+
+	// ExternalRowData indicates where the row data for this object is stored if
+	// it is stored outside the span of the object.
+	ExternalRowData() *descpb.ExternalRowData
 }
 
 // MutableTableDescriptor is both a MutableDescriptor and a TableDescriptor.

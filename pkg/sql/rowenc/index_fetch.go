@@ -12,6 +12,7 @@ package rowenc
 
 import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
@@ -53,6 +54,16 @@ func InitIndexFetchSpec(
 	s.KeyPrefixLength = uint32(len(codec.TenantPrefix()) +
 		encoding.EncodedLengthUvarintAscending(uint64(s.TableID)) +
 		encoding.EncodedLengthUvarintAscending(uint64(index.GetID())))
+
+	if ext := table.ExternalRowData(); ext != nil {
+		s.External = &fetchpb.IndexFetchSpec_ExternalRowData{
+			AsOf: ext.AsOf, TenantID: ext.TenantID, TableID: ext.TableID,
+		}
+		s.KeyPrefixLength = uint32(
+			len(keys.MakeSQLCodec(roachpb.MustMakeTenantID(ext.TenantID)).TenantPrefix()) +
+				encoding.EncodedLengthUvarintAscending(uint64(ext.TableID)) +
+				encoding.EncodedLengthUvarintAscending(uint64(index.GetID())))
+	}
 
 	s.FamilyDefaultColumns = table.FamilyDefaultColumns()
 
