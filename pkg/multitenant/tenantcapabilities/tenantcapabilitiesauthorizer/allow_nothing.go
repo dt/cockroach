@@ -72,3 +72,10 @@ func (n *AllowNothingAuthorizer) HasProcessDebugCapability(
 ) error {
 	return errors.New("operation blocked")
 }
+
+// MaybeIgnoreOtherTenantSpanReadError implements the tenantcapabilities.Authorizer interface.
+func (n *AllowNothingAuthorizer) MaybeIgnoreOtherTenantSpanReadError(
+	ctx context.Context, err error, tenID roachpb.TenantID,
+) error {
+	return errors.New("operation blocked")
+}

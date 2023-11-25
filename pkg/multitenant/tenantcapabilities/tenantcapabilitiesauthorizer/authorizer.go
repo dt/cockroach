@@ -112,6 +112,22 @@ func (a *Authorizer) HasCapabilityForBatch(
 	}
 }
 
+// MaybeIgnoreOtherTenantSpanReadError implements the tenantcapabilities.Authorizer interface.
+func (a *Authorizer) MaybeIgnoreOtherTenantSpanReadError(
+	ctx context.Context, err error, tenID roachpb.TenantID,
+) error {
+	if err == nil || tenID.IsSystem() {
+		// The system tenant has access to all request types.
+		return nil
+	}
+
+	_, mode := a.getMode(ctx, tenID)
+	if mode == authorizerModeAllowAll {
+		return nil
+	}
+	return err
+}
+
 // authBatchNoCap implements the pre-v23.1 authorization behavior, where
 // requests that are not subject to capabilities are allowed, and other
 // requests are only allowed for the system tenant.

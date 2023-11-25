@@ -64,7 +64,7 @@ func (a tenantAuthorizer) authorize(
 		return a.authBatch(ctx, sv, tenID, req.(*kvpb.BatchRequest))
 
 	case "/cockroach.roachpb.Internal/RangeLookup":
-		return a.authRangeLookup(tenID, req.(*kvpb.RangeLookupRequest))
+		return a.authRangeLookup(ctx, tenID, req.(*kvpb.RangeLookupRequest))
 
 	case "/cockroach.roachpb.Internal/RangeFeed", "/cockroach.roachpb.Internal/MuxRangeFeed":
 		return a.authRangeFeed(tenID, req.(*kvpb.RangeFeedRequest))
@@ -195,7 +195,10 @@ func (a tenantAuthorizer) authBatch(
 		return authError(err.Error())
 	}
 	tenSpan := tenantPrefix(tenID)
-	return checkSpanBounds(rSpan, tenSpan)
+	if err := checkSpanBounds(rSpan, tenSpan); err != nil {
+		return a.capabilitiesAuthorizer.MaybeIgnoreOtherTenantSpanReadError(ctx, err, tenID)
+	}
+	return nil
 }
 
 func (a tenantAuthorizer) authGetRangeDescriptors(
@@ -219,11 +222,15 @@ func (a tenantAuthorizer) authSpanStats(
 // authRangeLookup authorizes the provided tenant to invoke the RangeLookup RPC
 // with the provided args.
 func (a tenantAuthorizer) authRangeLookup(
-	tenID roachpb.TenantID, args *kvpb.RangeLookupRequest,
+	ctx context.Context, tenID roachpb.TenantID, args *kvpb.RangeLookupRequest,
 ) error {
 	tenSpan := tenantPrefix(tenID)
 	if !tenSpan.ContainsKey(args.Key) {
-		return authErrorf("requested key %s not fully contained in tenant keyspace %s", args.Key, tenSpan)
+		return a.capabilitiesAuthorizer.MaybeIgnoreOtherTenantSpanReadError(
+			ctx,
+			authErrorf("requested key %s not fully contained in tenant keyspace %s", args.Key, tenSpan),
+			tenID,
+		)
 	}
 	return nil
 }

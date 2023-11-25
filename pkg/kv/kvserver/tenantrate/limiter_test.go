@@ -665,6 +665,13 @@ func (ts *testState) HasCapabilityForBatch(
 	panic("unimplemented")
 }
 
+// MaybeIgnoreOtherTenantSpanReadError implements the tenantcapabilities.Authorizer interface.
+func (ts *testState) MaybeIgnoreOtherTenantSpanReadError(
+	ctx context.Context, err error, tenID roachpb.TenantID,
+) error {
+	panic("unimplemented")
+}
+
 func (ts *testState) BindReader(tenantcapabilities.Reader) {}
 
 var _ tenantcapabilities.Authorizer = &testState{}

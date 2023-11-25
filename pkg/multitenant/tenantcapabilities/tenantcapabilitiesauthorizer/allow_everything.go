@@ -73,3 +73,10 @@ func (n *AllowEverythingAuthorizer) HasProcessDebugCapability(
 ) error {
 	return nil
 }
+
+// MaybeIgnoreOtherTenantSpanReadError implements the tenantcapabilities.Authorizer interface.
+func (n *AllowEverythingAuthorizer) MaybeIgnoreOtherTenantSpanReadError(
+	ctx context.Context, err error, tenID roachpb.TenantID,
+) error {
+	return nil
+}

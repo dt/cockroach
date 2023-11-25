@@ -76,6 +76,8 @@ type Authorizer interface {
 	// HasProcessDebugCapability returns an error if a tenant, referenced by its ID,
 	// is not allowed to debug the running process.
 	HasProcessDebugCapability(ctx context.Context, tenID roachpb.TenantID) error
+
+	MaybeIgnoreOtherTenantSpanReadError(ctx context.Context, err error, tenID roachpb.TenantID) error
 }
 
 // Entry ties together a tenantID with its capabilities.
