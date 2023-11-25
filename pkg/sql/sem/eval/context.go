@@ -881,4 +881,10 @@ type StreamIngestManager interface {
 		tenantName roachpb.TenantName,
 		revertTo hlc.Timestamp,
 	) error
+
+	SetupReaderCatalog(
+		ctx context.Context,
+		from, to roachpb.TenantName,
+		asOf hlc.Timestamp,
+	) error
 }

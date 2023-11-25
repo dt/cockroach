@@ -2305,6 +2305,11 @@ func (desc *Mutable) SetOffline(reason string) {
 	desc.OfflineReason = reason
 }
 
+func (desc *Mutable) SetExternal(ext *descpb.ExternalRowData) {
+	desc.IsMaterializedView = true
+	desc.External = ext
+}
+
 // IsLocalityRegionalByRow implements the TableDescriptor interface.
 func (desc *wrapper) IsLocalityRegionalByRow() bool {
 	return desc.LocalityConfig.GetRegionalByRow() != nil
