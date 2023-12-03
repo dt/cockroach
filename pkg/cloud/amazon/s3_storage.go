@@ -468,6 +468,8 @@ func MakeS3Storage(
 		return s, nil
 	}
 
+	log.Infof(ctx, "creating new s3 client (key %v != cached key %v)", s.opts, s3ClientCache.key)
+
 	// Make the client and cache it *while holding the lock*. We want to keep
 	// other callers from making clients in the meantime, not just to avoid making
 	// duplicate clients in a race but also because making clients concurrently
