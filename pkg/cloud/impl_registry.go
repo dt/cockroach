@@ -305,8 +305,12 @@ func (e *esWrapper) ReadFile(
 }
 
 func (e *esWrapper) List(ctx context.Context, prefix, delimiter string, fn ListingFn) error {
+	countingFn := func(s string) error {
+		e.metricsRecorder.metricsRecorder.Metrics().ListingResults.Inc(1)
+		return fn(s)
+	}
 	e.metricsRecorder.metricsRecorder.Metrics().Listings.Inc(1)
-	return e.ExternalStorage.List(ctx, prefix, delimiter, fn)
+	return e.ExternalStorage.List(ctx, prefix, delimiter, countingFn)
 }
 
 func (e *esWrapper) Writer(ctx context.Context, basename string) (io.WriteCloser, error) {
