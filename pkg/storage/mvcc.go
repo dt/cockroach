@@ -5058,7 +5058,21 @@ func MVCCResolveWriteIntent(
 				}
 				defer iter.Close()
 			}
-			outcome, err = mvccResolveWriteIntent(ctx, rw, iter, ms, intent, &buf.meta, buf)
+			var tbi MVCCIterator
+			{
+				tbi, err = rw.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
+					Prefix:       true,
+					KeyTypes:     IterKeyTypePointsAndRanges,
+					ReadCategory: IntentResolutionReadCategory,
+					MinTimestamp: intent.Txn.MinTimestamp,
+					MaxTimestamp: hlc.MaxTimestamp,
+				})
+				if err != nil {
+					return false, 0, nil, false, err
+				}
+				defer tbi.Close()
+			}
+			outcome, err = mvccResolveWriteIntent(ctx, rw, iter, tbi, ms, intent, &buf.meta, buf)
 		} else {
 			outcome, err = mvccReleaseLockInternal(ctx, rw, ms, intent, str, &buf.meta, buf)
 			replLocksReleased = replLocksReleased || outcome != lockNoop
@@ -5217,7 +5231,7 @@ const (
 func mvccResolveWriteIntent(
 	ctx context.Context,
 	writer Writer,
-	iter MVCCIterator,
+	rawIter, tbiIter MVCCIterator,
 	ms *enginepb.MVCCStats,
 	// TODO(nvanbenschoten): rename this field to "update".
 	intent roachpb.LockUpdate,
@@ -5376,6 +5390,7 @@ func mvccResolveWriteIntent(
 			oldKey := latestKey
 			newKey := oldKey
 			newKey.Timestamp = newTimestamp
+			iter := tbiIter
 
 			// Rewrite the versioned value at the new timestamp.
 			iter.SeekGE(oldKey)
@@ -5550,49 +5565,54 @@ func mvccResolveWriteIntent(
 	var unsafeNextKey MVCCKey
 	var nextValueLen int
 	var nextValueIsTombstone bool
-	if nextKey := latestKey.Next(); nextKey.IsValue() {
-		// The latestKey was not the smallest possible timestamp {WallTime: 0,
-		// Logical: 1}. Practically, this is the only case that will occur in
-		// production.
-		var hasPoint, hasRange bool
-		iter.SeekGE(nextKey)
-		if ok, err = iter.Valid(); err != nil {
-			return lockNoop, err
-		} else if ok {
-			// If the seek lands on a bare range key, attempt to step to a point.
-			if hasPoint, hasRange = iter.HasPointAndRange(); hasRange && !hasPoint {
-				iter.Next()
-				if ok, err = iter.Valid(); err != nil {
-					return lockNoop, err
-				} else if ok {
-					hasPoint, hasRange = iter.HasPointAndRange()
-					ok = hasPoint
-				}
-			}
-		}
-		if ok = ok && iter.UnsafeKey().Key.Equal(latestKey.Key); ok {
-			unsafeNextKey = iter.UnsafeKey()
-			if !unsafeNextKey.IsValue() {
-				// Should never see an intent for this key since we seeked to a
-				// particular timestamp.
-				return lockNoop, errors.Errorf("expected an MVCC value key: %s", unsafeNextKey)
-			}
-			nextValueLen, nextValueIsTombstone, err = iter.MVCCValueLenAndIsTombstone()
-			if err != nil {
+
+	for _, iter := range []MVCCIterator{tbiIter, rawIter} {
+		if nextKey := latestKey.Next(); nextKey.IsValue() {
+			// The latestKey was not the smallest possible timestamp {WallTime: 0,
+			// Logical: 1}. Practically, this is the only case that will occur in
+			// production.
+			var hasPoint, hasRange bool
+			iter.SeekGE(nextKey)
+			if ok, err = iter.Valid(); err != nil {
 				return lockNoop, err
+			} else if ok {
+				// If the seek lands on a bare range key, attempt to step to a point.
+				if hasPoint, hasRange = iter.HasPointAndRange(); hasRange && !hasPoint {
+					iter.Next()
+					if ok, err = iter.Valid(); err != nil {
+						return lockNoop, err
+					} else if ok {
+						hasPoint, hasRange = iter.HasPointAndRange()
+						ok = hasPoint
+					}
+				}
 			}
-			// If a non-tombstone point key is covered by a range tombstone, then
-			// synthesize a point tombstone at the lowest range tombstone covering it.
-			// This is where the point key ceases to exist, contributing to GCBytesAge.
-			if !nextValueIsTombstone && hasRange {
-				if v, found := iter.RangeKeys().FirstAtOrAbove(unsafeNextKey.Timestamp); found {
-					unsafeNextKey.Timestamp = v.Timestamp
-					nextValueIsTombstone = true
-					nextValueLen = 0
+			if ok = ok && iter.UnsafeKey().Key.Equal(latestKey.Key); ok {
+				unsafeNextKey = iter.UnsafeKey()
+				if !unsafeNextKey.IsValue() {
+					// Should never see an intent for this key since we seeked to a
+					// particular timestamp.
+					return lockNoop, errors.Errorf("expected an MVCC value key: %s", unsafeNextKey)
+				}
+				nextValueLen, nextValueIsTombstone, err = iter.MVCCValueLenAndIsTombstone()
+				if err != nil {
+					return lockNoop, err
+				}
+				// If a non-tombstone point key is covered by a range tombstone, then
+				// synthesize a point tombstone at the lowest range tombstone covering it.
+				// This is where the point key ceases to exist, contributing to GCBytesAge.
+				if !nextValueIsTombstone && hasRange {
+					if v, found := iter.RangeKeys().FirstAtOrAbove(unsafeNextKey.Timestamp); found {
+						unsafeNextKey.Timestamp = v.Timestamp
+						nextValueIsTombstone = true
+						nextValueLen = 0
+					}
 				}
 			}
 		}
-		iter = nil // prevent accidental use below
+		if ok {
+			break
+		}
 	}
 	// Else stepped to next key, so !ok
 
@@ -5763,6 +5783,14 @@ func MVCCResolveWriteIntentRange(
 		UpperBound:   intent.EndKey,
 		ReadCategory: IntentResolutionReadCategory,
 	}
+	tbiOpts := iterOpts
+	tbiOpts.MinTimestamp = intent.Txn.MinTimestamp
+	tbiOpts.MaxTimestamp = hlc.MaxTimestamp
+	tbi, err := rw.NewMVCCIterator(ctx, MVCCKeyIterKind, tbiOpts)
+	if err != nil {
+		return 0, 0, nil, 0, false, err
+	}
+	defer tbi.Close()
 	if rw.ConsistentIterators() {
 		// Production code should always have consistent iterators.
 		mvccIter, err = rw.NewMVCCIterator(ctx, MVCCKeyIterKind, iterOpts)
@@ -5839,7 +5867,7 @@ func MVCCResolveWriteIntentRange(
 		beforeBytes := rw.BufferedSize()
 		var outcome lockResolutionOutcome
 		if ltKey.Strength == lock.Intent {
-			outcome, err = mvccResolveWriteIntent(ctx, rw, mvccIter, ms, intent, &buf.meta, buf)
+			outcome, err = mvccResolveWriteIntent(ctx, rw, mvccIter, tbi, ms, intent, &buf.meta, buf)
 		} else {
 			outcome, err = mvccReleaseLockInternal(ctx, rw, ms, intent, ltKey.Strength, &buf.meta, buf)
 			replLocksReleased = replLocksReleased || outcome != lockNoop
