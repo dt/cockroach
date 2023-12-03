@@ -304,6 +304,11 @@ func (e *esWrapper) ReadFile(
 	return e.wrapReader(ctx, r), s, nil
 }
 
+func (e *esWrapper) List(ctx context.Context, prefix, delimiter string, fn ListingFn) error {
+	e.metricsRecorder.metricsRecorder.Metrics().Listings.Inc(1)
+	return e.ExternalStorage.List(ctx, prefix, delimiter, fn)
+}
+
 func (e *esWrapper) Writer(ctx context.Context, basename string) (io.WriteCloser, error) {
 	w, err := e.ExternalStorage.Writer(ctx, basename)
 	if err != nil {
