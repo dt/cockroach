@@ -266,7 +266,7 @@ type esWrapper struct {
 
 	lim             rwLimiter
 	ioRecorder      ReadWriterInterceptor
-	metricsRecorder ReadWriterInterceptor
+	metricsRecorder *metricsReadWriter
 }
 
 func (e *esWrapper) wrapReader(ctx context.Context, r ioctx.ReadCloserCtx) ioctx.ReadCloserCtx {

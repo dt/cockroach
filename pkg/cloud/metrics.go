@@ -96,7 +96,7 @@ type metricsReadWriter struct {
 	metricsRecorder MetricsRecorder
 }
 
-func newMetricsReadWriter(m MetricsRecorder) ReadWriterInterceptor {
+func newMetricsReadWriter(m MetricsRecorder) *metricsReadWriter {
 	return &metricsReadWriter{metricsRecorder: m}
 }
 
