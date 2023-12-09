@@ -193,7 +193,8 @@ func sendAddRemoteSSTWorker(
 				// split, then flush so that when we split we are splitting an empty
 				// span rather than one we have added to, since we add with estimated
 				// stats and splitting a span with estimated stats is slow.
-				if batchSize > targetBatchSize {
+				if batchSize+file.BackupFileEntryCounts.DataSize > targetBatchSize {
+					log.Infof(ctx, "flushing %s batch of %d SSTs", sz(batchSize), len(toAdd))
 					if err := flush(file.BackupFileEntrySpan.Key); err != nil {
 						return err
 					}
