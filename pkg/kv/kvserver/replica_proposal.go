@@ -641,11 +641,13 @@ func addSSTablePreApply(
 ) bool {
 	if sst.RemoteFilePath != "" {
 		log.Infof(ctx,
-			"EXPERIMENTAL AddSSTABLE EXTERNAL %s (size %d, span %s) from %s",
+			"EXPERIMENTAL AddSSTABLE EXTERNAL %s (size %d, span %s) from %s [prefix replace %q -> %q]",
 			sst.RemoteFilePath,
 			sst.BackingFileSize,
 			sst.Span,
 			sst.RemoteFileLoc,
+			roachpb.Key(sst.Prefix.From),
+			roachpb.Key(sst.Prefix.To),
 		)
 		start := storage.EngineKey{Key: sst.Span.Key}
 		end := storage.EngineKey{Key: sst.Span.EndKey}
@@ -655,6 +657,10 @@ func addSSTablePreApply(
 			Size:            sst.BackingFileSize,
 			SmallestUserKey: start.Encode(),
 			LargestUserKey:  end.Encode(),
+			// TODO(dt): Enable when pebble has prefix-replacement support.
+			//	HasPrefixRule:   len(sst.Prefix.From) > 0,
+			//	Backing:         sst.Prefix.From,
+			//	Materialized:    sst.Prefix.To,
 
 			// TODO(msbutler): I guess we need to figure out if the backing external
 			// file has point or range keys in the target span.
