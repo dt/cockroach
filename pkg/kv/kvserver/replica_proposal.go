@@ -657,10 +657,9 @@ func addSSTablePreApply(
 			Size:            sst.BackingFileSize,
 			SmallestUserKey: start.Encode(),
 			LargestUserKey:  end.Encode(),
-			// TODO(dt): Enable when pebble has prefix-replacement support.
-			//	HasPrefixRule:   len(sst.Prefix.From) > 0,
-			//	Backing:         sst.Prefix.From,
-			//	Materialized:    sst.Prefix.To,
+			HasPrefixRule:   len(sst.Prefix.From) > 0,
+			Backing:         sst.Prefix.From,
+			Materialized:    sst.Prefix.To,
 
 			// TODO(msbutler): I guess we need to figure out if the backing external
 			// file has point or range keys in the target span.
