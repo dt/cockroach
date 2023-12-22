@@ -100,10 +100,10 @@ func (s *systemStatusServer) localDownloadSpan(
 				defer close(stopTuningCh)
 				return downloadSpans(ctx, store.StateEngine(), downloadSpansCh)
 			},
-			// Send spans to downloadSpansCh.
+			// Send spans to downloadSpansCh, then close it.
 			func(ctx context.Context) error {
 				defer close(downloadSpansCh)
-				return sendDownloadSpans(ctx, req.Spans, downloadSpansCh)
+				return sendDownloadSpans(ctx, store, req.Spans, downloadSpansCh)
 			},
 		)
 	})
@@ -111,17 +111,51 @@ func (s *systemStatusServer) localDownloadSpan(
 
 // sendDownloadSpans sends spans that cover all spans in spans to the passed ch.
 func sendDownloadSpans(
-	ctx context.Context, spans roachpb.Spans, out chan roachpb.Span,
+	ctx context.Context, s *kvserver.Store, spans roachpb.Spans, out chan roachpb.Span,
 ) error {
 	ctxDone := ctx.Done()
+
+	todo := roachpb.SpanGroup{}
 	for _, sp := range spans {
+		todo.Add(sp)
+	}
+
+	var lhSent int
+	s.VisitReplicas(func(rep *kvserver.Replica) bool {
+		if ctx.Err() != nil {
+			return false
+		}
+
+		// If this replica isn't interesting to us, because it was not in the
+		// spans to download or has already been downloaded, just move on.
+		sp := rep.Desc().KeySpan().AsRawSpanWithNoLocals()
+		if !todo.Encloses(sp) {
+			return true
+		}
+
+		// If this replica is the leaseholder, download it now.
+		if rep.CurrentLeaseStatus(ctx).OwnedBy(s.StoreID()) {
+			select {
+			case out <- sp:
+			case <-ctxDone:
+				return false
+			}
+			todo.Sub(sp)
+			lhSent++
+		}
+
+		return true
+	})
+
+	log.Infof(ctx, "%d leaseholder subspans queued for download; moving on to %d remaining spans...", lhSent, todo.Len())
+	return todo.ForEach(func(sp roachpb.Span) error {
 		select {
 		case out <- sp:
 		case <-ctxDone:
 			return ctx.Err()
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // downloadSpans instructs the passed engine, in parallel, to downloads spans
