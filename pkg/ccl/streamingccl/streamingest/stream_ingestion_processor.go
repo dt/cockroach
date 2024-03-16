@@ -875,6 +875,8 @@ func (sip *streamIngestionProcessor) bufferCheckpoint(event partitionEvent) erro
 	lowestTimestamp := hlc.MaxTimestamp
 	highestTimestamp := hlc.MinTimestamp
 	for _, resolvedSpan := range resolvedSpans {
+		resolvedSpan.Timestamp.Logical = 0
+		resolvedSpan.Timestamp.WallTime -= resolvedSpan.Timestamp.WallTime % int64(time.Second*5)
 		if resolvedSpan.Timestamp.Less(lowestTimestamp) {
 			lowestTimestamp = resolvedSpan.Timestamp
 		}

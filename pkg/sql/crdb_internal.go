@@ -8943,7 +8943,7 @@ var crdbInternalClusterReplicationResolvedView = virtualSchemaView{
 				crdb_internal.pretty_key(decode(s->'span'->>'key', 'base64'), 0) as start_key,
 				crdb_internal.pretty_key(decode(s->'span'->>'endKey', 'base64'), 0) as end_key,
 				((s->'timestamp'->>'wallTime')||'.'||COALESCE((s->'timestamp'->'logical'), '0'))::decimal AS resolved,
-				((cluster_logical_timestamp() - (s->'timestamp'->>'wallTime')::int) /1e9)::interval AS behind
+				date_trunc('second', ((cluster_logical_timestamp() - (s->'timestamp'->>'wallTime')::int) /1e9)::interval) AS behind
 			FROM spans`,
 	resultColumns: colinfo.ResultColumns{
 		{Name: "job_id", Typ: types.Int},
