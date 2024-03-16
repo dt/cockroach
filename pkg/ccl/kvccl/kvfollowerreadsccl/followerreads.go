@@ -218,7 +218,7 @@ func (r bulkOracle) ChoosePreferredReplica(
 	desc *roachpb.RangeDescriptor,
 	leaseholder *roachpb.ReplicaDescriptor,
 	_ roachpb.RangeClosedTimestampPolicy,
-	_ replicaoracle.QueryState,
+	qs replicaoracle.QueryState,
 ) (_ roachpb.ReplicaDescriptor, ignoreMisplannedRanges bool, _ error) {
 	if leaseholder != nil && !checkFollowerReadsEnabled(r.cfg.Settings) {
 		return *leaseholder, false, nil
@@ -239,6 +239,13 @@ func (r bulkOracle) ChoosePreferredReplica(
 			return replicas[matches[randutil.FastUint32()%uint32(len(matches))]].ReplicaDescriptor, true, nil
 		}
 	}
+	for i := range replicas {
+		// TODO(dt): limit run length.
+		if replicas[i].NodeID == qs.LastAssignment {
+			return replicas[i].ReplicaDescriptor, true, nil
+		}
+	}
+
 	return replicas[randutil.FastUint32()%uint32(len(replicas))].ReplicaDescriptor, true, nil
 }
 
