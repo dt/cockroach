@@ -261,11 +261,11 @@ func (r bulkOracle) ChoosePreferredReplica(
 	// If the previously chosen node is a candidate in replicas, check if we want
 	// to pick it instead of picking a random one.
 	if prevChoiceIdx != -1 {
-		// If the previously chosen node has fewer than 10 ranges assigned to it, or
-		// has fewer than twice as many ranges as the with the fewest assigned, then
-		// we can pick it again without worrying about overly skewing our assignment
-		// towards a single node.
-		if prevChoiceAssigned < 10 || prevChoiceAssigned < low*2 {
+		// If the previously chosen node been not been picked 10 times in a row, or
+		// has fewer than twice as many ranges assigned as the node with the fewest
+		// assigned, pick it again without worrying about overly skewing the spread
+		// of assignments.
+		if qs.NodeStreak < 10 || prevChoiceAssigned < low*2 {
 			return replicas[prevChoiceIdx].ReplicaDescriptor, true, nil
 		}
 	}
