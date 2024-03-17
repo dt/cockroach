@@ -297,7 +297,13 @@ func newStreamIngestionDataProcessor(
 	}
 	trackedSpans := make([]roachpb.Span, 0)
 	for _, partitionSpec := range spec.PartitionSpecs {
-		trackedSpans = append(trackedSpans, partitionSpec.Spans...)
+		for _, sp := range partitionSpec.Spans {
+			if last := len(trackedSpans) - 1; last >= 0 && trackedSpans[last].EndKey.Equal(sp.Key) {
+				trackedSpans[last].EndKey = sp.EndKey
+			} else {
+				trackedSpans = append(trackedSpans, sp)
+			}
+		}
 	}
 
 	frontier, err := span.MakeFrontierAt(spec.PreviousReplicatedTimestamp, trackedSpans...)
