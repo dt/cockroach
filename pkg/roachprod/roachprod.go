@@ -442,13 +442,27 @@ func SQL(
 	if len(c.Nodes) == 1 {
 		return c.ExecOrInteractiveSQL(ctx, l, tenantName, tenantInstance, cmdArray)
 	}
+
 	results, err := c.ExecSQL(ctx, l, c.Nodes, tenantName, tenantInstance, cmdArray)
 	if err != nil {
 		return err
 	}
 
-	for _, r := range results {
-		l.Printf("node %d:\n%s", r.Node, r.CombinedOut)
+	for i, r := range results {
+		// If we got 3 lines -- a header, one result, and trailing \n -- then we can
+		// just print the one result line per node to make it easier to read as a
+		// single aggregated result set. We splitN 4 to detect if there are >2 lines
+		// in which case we'll do the usual log of a node line between results.
+		// NB: we also just printf here instead of l.Print to skip logger prefix.
+		lines := strings.SplitN(r.CombinedOut, "\n", 4)
+		if len(lines) == 3 {
+			if i == 0 {
+				fmt.Printf("    \t%s\n", lines[0])
+			}
+			fmt.Printf("n%d:\t%s\n", r.Node, lines[1])
+			continue
+		}
+		l.Printf("node %d %d:\n%s", r.Node, len(lines), r.CombinedOut)
 	}
 	return nil
 }
