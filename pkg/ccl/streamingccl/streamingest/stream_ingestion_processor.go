@@ -445,6 +445,8 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 			}
 		}
 
+		log.Infof(ctx, "frontier: %s", sip.frontier.String())
+
 		sub, err := streamClient.Subscribe(ctx, streampb.StreamID(sip.spec.StreamID), int32(sip.flowCtx.NodeID.SQLInstanceID()), token,
 			sip.spec.InitialScanTimestamp, previousReplicatedTimestamp, sip.frontier)
 

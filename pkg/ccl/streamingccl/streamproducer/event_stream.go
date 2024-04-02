@@ -164,6 +164,7 @@ func (s *eventStream) Start(ctx context.Context, txn *kv.Txn) (retErr error) {
 		return err
 	}
 	for _, sp := range s.spec.ResolvedSpans {
+		log.Infof(ctx, "adding span %s -> %s", sp.Span, sp.Timestamp)
 		if _, err := f.Forward(sp.Span, sp.Timestamp); err != nil {
 			f.Release()
 			return err
