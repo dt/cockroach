@@ -157,7 +157,21 @@ func (s *eventStream) Start(ctx context.Context, txn *kv.Txn) (retErr error) {
 	// Start rangefeed, which spins up a separate go routine to perform it's job.
 	s.rf = s.execCfg.RangeFeedFactory.New(
 		fmt.Sprintf("streamID=%d", s.streamID), initialTimestamp, s.onValue, opts...)
-	if err := s.rf.Start(ctx, s.spec.Spans); err != nil {
+
+	f, err := span.MakeFrontierAt(initialTimestamp, s.spec.Spans...)
+	if err != nil {
+		f.Release()
+		return err
+	}
+	for _, sp := range s.spec.ResolvedSpans {
+		if _, err := f.Forward(sp.Span, sp.Timestamp); err != nil {
+			f.Release()
+			return err
+		}
+	}
+
+	if err := s.rf.StartWithFrontier(ctx, f); err != nil {
+		f.Release()
 		return err
 	}
 

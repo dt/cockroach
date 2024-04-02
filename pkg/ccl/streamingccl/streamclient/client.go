@@ -20,6 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/span"
 	"github.com/cockroachdb/errors"
 )
 
@@ -85,8 +86,15 @@ type Client interface {
 	// the specified remote address. This is used by each consumer processor to
 	// open its subscription to its partition of a larger stream.
 	// TODO(dt): ts -> checkpointToken.
-	Subscribe(ctx context.Context, streamID streampb.StreamID, procID int32, spec SubscriptionToken,
-		initialScanTime hlc.Timestamp, previousReplicatedTime hlc.Timestamp) (Subscription, error)
+	Subscribe(
+		ctx context.Context,
+		streamID streampb.StreamID,
+		procID int32,
+		spec SubscriptionToken,
+		initialScanTime hlc.Timestamp,
+		previousReplicatedTimes hlc.Timestamp,
+		progress span.Frontier,
+	) (Subscription, error)
 
 	// Complete completes a replication stream consumption.
 	Complete(ctx context.Context, streamID streampb.StreamID, successfulIngestion bool) error

@@ -35,6 +35,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
+	"github.com/cockroachdb/cockroach/pkg/util/span"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 )
@@ -471,6 +472,7 @@ func (m *RandomStreamClient) Subscribe(
 	spec SubscriptionToken,
 	initialScanTime hlc.Timestamp,
 	_ hlc.Timestamp,
+	_ span.Frontier,
 ) (Subscription, error) {
 	partitionURL, err := url.Parse(string(spec))
 	if err != nil {

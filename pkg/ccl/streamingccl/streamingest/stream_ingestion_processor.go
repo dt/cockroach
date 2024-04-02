@@ -446,7 +446,7 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 		}
 
 		sub, err := streamClient.Subscribe(ctx, streampb.StreamID(sip.spec.StreamID), int32(sip.flowCtx.NodeID.SQLInstanceID()), token,
-			sip.spec.InitialScanTimestamp, previousReplicatedTimestamp)
+			sip.spec.InitialScanTimestamp, previousReplicatedTimestamp, sip.frontier)
 
 		if err != nil {
 			sip.MoveToDrainingAndLogError(errors.Wrapf(err, "consuming partition %v", redactedAddr))

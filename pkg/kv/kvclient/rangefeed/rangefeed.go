@@ -196,10 +196,6 @@ func (f *RangeFeed) Start(ctx context.Context, spans []roachpb.Span) error {
 		return errors.AssertionFailedf("expected at least 1 span, got none")
 	}
 
-	if !atomic.CompareAndSwapInt32(&f.started, 0, 1) {
-		return errors.AssertionFailedf("rangefeed already started")
-	}
-
 	// Maintain a frontier in order to resume at a reasonable timestamp.
 	// TODO(ajwerner): Consider exposing the frontier through a RangeFeed method.
 	// Doing so would require some synchronization.
@@ -213,6 +209,13 @@ func (f *RangeFeed) Start(ctx context.Context, spans []roachpb.Span) error {
 			frontier.Release() // release whatever was allocated.
 			return err
 		}
+	}
+	return f.StartWithFrontier(ctx, frontier)
+}
+
+func (f *RangeFeed) StartWithFrontier(ctx context.Context, frontier span.Frontier) error {
+	if !atomic.CompareAndSwapInt32(&f.started, 0, 1) {
+		return errors.AssertionFailedf("rangefeed already started")
 	}
 
 	// Frontier merges and de-dups passed in spans.  So, use frontier to initialize
@@ -235,9 +238,9 @@ func (f *RangeFeed) Start(ctx context.Context, spans []roachpb.Span) error {
 	}
 
 	f.spansDebugStr = func() string {
-		n := len(spans)
+		n := len(f.spans)
 		if n == 1 {
-			return spans[0].String()
+			return f.spans[0].String()
 		}
 
 		return fmt.Sprintf("{%s}", frontier.String())
