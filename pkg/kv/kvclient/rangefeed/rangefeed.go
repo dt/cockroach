@@ -283,7 +283,7 @@ func (f *RangeFeed) run(ctx context.Context, frontier span.Frontier) {
 	restartLogEvery := log.Every(10 * time.Second)
 
 	if f.withInitialScan {
-		if done := f.runInitialScan(ctx, &restartLogEvery, &r); done {
+		if done := f.runInitialScan(ctx, &restartLogEvery, &r, frontier); done {
 			return
 		}
 	}

@@ -29,7 +29,7 @@ import (
 // was canceled or if the OnInitialScanError function indicated that the
 // RangeFeed should stop.
 func (f *RangeFeed) runInitialScan(
-	ctx context.Context, n *log.EveryN, r *retry.Retry,
+	ctx context.Context, n *log.EveryN, r *retry.Retry, frontier span.Frontier,
 ) (canceled bool) {
 	onValue := func(kv roachpb.KeyValue) {
 		v := kvpb.RangeFeedValue{
@@ -63,8 +63,7 @@ func (f *RangeFeed) runInitialScan(
 		}
 	}
 
-	getSpansToScan, cleanup := f.getSpansToScan(ctx)
-	defer cleanup()
+	getSpansToScan := f.getSpansToScan(ctx, frontier)
 
 	r.Reset()
 	for r.Next() {
@@ -89,28 +88,19 @@ func (f *RangeFeed) runInitialScan(
 	return false
 }
 
-func (f *RangeFeed) getSpansToScan(ctx context.Context) (func() []roachpb.Span, func()) {
+func (f *RangeFeed) getSpansToScan(
+	ctx context.Context, frontier span.Frontier,
+) func() []roachpb.Span {
 	retryAll := func() []roachpb.Span {
 		return f.spans
 	}
 
-	noCleanup := func() {}
 	if f.retryBehavior == ScanRetryAll {
-		return retryAll, noCleanup
+		return retryAll
 	}
 
 	// We want to retry remaining spans.
-	// Maintain a frontier in order to keep track of which spans still need to be scanned.
-	frontier, err := span.MakeFrontier(f.spans...)
-	if err != nil {
-		// Frontier construction shouldn't really fail. The spans have already
-		// been validated by frontier constructed when starting rangefeed.
-		// We don't really have a good mechanism to return an initialization error from here,
-		// so, log it and fall back to retrying all spans.
-		log.Errorf(ctx, "failed to build frontier for the initial scan; "+
-			"falling back to retry all behavior: err=%v", err)
-		return retryAll, noCleanup
-	}
+
 	frontier = span.MakeConcurrentFrontier(frontier)
 
 	userSpanDoneCallback := f.onSpanDone
@@ -144,5 +134,5 @@ func (f *RangeFeed) getSpansToScan(ctx context.Context) (func() []roachpb.Span, 
 			return span.ContinueMatch
 		})
 		return retrySpans
-	}, frontier.Release
+	}
 }

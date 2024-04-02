@@ -136,6 +136,12 @@ func (s *eventStream) Start(ctx context.Context, txn *kv.Txn) (retErr error) {
 		rangefeed.WithOnValues(s.onValues),
 	}
 
+	f, err := span.MakeFrontier()
+	if err != nil {
+		f.Release()
+		return err
+	}
+
 	initialTimestamp := s.spec.InitialScanTimestamp
 	if s.spec.PreviousReplicatedTimestamp.IsEmpty() {
 		s.addMu = &syncutil.Mutex{}
@@ -148,8 +154,15 @@ func (s *eventStream) Start(ctx context.Context, txn *kv.Txn) (retErr error) {
 				return int(s.spec.Config.InitialScanParallelism)
 			}),
 		)
+		if err := f.AddSpansAt(hlc.Timestamp{}, s.spec.Spans...); err != nil {
+			f.Release()
+			return err
+		}
 	} else {
-		initialTimestamp = s.spec.PreviousReplicatedTimestamp
+		if err := f.AddSpansAt(s.spec.PreviousReplicatedTimestamp, s.spec.Spans...); err != nil {
+			f.Release()
+			return err
+		}
 		// When resuming from cursor, advance frontier to the cursor position.
 		log.Infof(ctx, "resuming event stream (no initial scan) from %s", initialTimestamp)
 	}
@@ -158,11 +171,6 @@ func (s *eventStream) Start(ctx context.Context, txn *kv.Txn) (retErr error) {
 	s.rf = s.execCfg.RangeFeedFactory.New(
 		fmt.Sprintf("streamID=%d", s.streamID), initialTimestamp, s.onValue, opts...)
 
-	f, err := span.MakeFrontierAt(initialTimestamp, s.spec.Spans...)
-	if err != nil {
-		f.Release()
-		return err
-	}
 	for _, sp := range s.spec.ResolvedSpans {
 		log.Infof(ctx, "adding span %s -> %s", sp.Span, sp.Timestamp)
 		if _, err := f.Forward(sp.Span, sp.Timestamp); err != nil {
