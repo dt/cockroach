@@ -182,6 +182,11 @@ func (e sqlEncoder) ForSystemTenant() bool {
 	return e.TenantID.IsSystem()
 }
 
+// EmptyPrefix returns whether the encoder is bound to the tenant 1.
+func (e sqlEncoder) EmptyPrefix() bool {
+	return e.TenantID.InternalValue == 1
+}
+
 // TenantPrefix returns the key prefix used for the tenants's data.
 func (e sqlEncoder) TenantPrefix() roachpb.Key {
 	return *e.buf
