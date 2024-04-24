@@ -231,12 +231,9 @@ type streamIngestionProcessor struct {
 	rangeBatcher      *rangeKeyBatcher
 	maxFlushRateTimer timeutil.Timer
 
-	// client is a streaming client which provides a stream of events from a given
-	// address.
 	forceClientForTests streamclient.Client
-	// streamPartitionClients are a collection of streamclient.Client created for
-	// consuming multiple partitions from a stream.
-	streamPartitionClients []streamclient.Client
+	client              streamclient.Client
+	subscription        streamclient.Subscription
 
 	// cutoverProvider indicates when the cutover time has been reached.
 	cutoverProvider cutoverProvider
@@ -252,15 +249,8 @@ type streamIngestionProcessor struct {
 	// related to this processor.
 	workerGroup ctxgroup.Group
 
-	// subscriptionGroup is different from workerGroup since we
-	// want to explicitly cancel the context related to it.
-	subscriptionGroup  ctxgroup.Group
-	subscriptionCancel context.CancelFunc
-
 	// stopCh stops the cutover poller and flush loop.
 	stopCh chan struct{}
-
-	mergedSubscription *mergedSubscription
 
 	flushCh chan flushableBuffer
 
@@ -281,12 +271,6 @@ type streamIngestionProcessor struct {
 	// backupDataProcessors' trace recording.
 	agg      *bulkutil.TracingAggregator
 	aggTimer timeutil.Timer
-}
-
-// partitionEvent augments a normal event with the partition it came from.
-type partitionEvent struct {
-	streamingccl.Event
-	partition string
 }
 
 var (
@@ -375,7 +359,7 @@ func newStreamIngestionDataProcessor(
 // A polling loop watches the cutover time and signals the
 // consumeEvents loop to stop ingesting.
 //
-//	client.Subscribe -> mergedSubscription -> consumeEvents -> flushLoop -> Next()
+//	client.Subscribe -> consumeEvents -> flushLoop -> Next()
 //	cutoverPoller ---------------------------------^
 //
 // All errors are reported to Next() via errCh, with the first
@@ -411,65 +395,57 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 
 	sip.rangeBatcher = newRangeKeyBatcher(ctx, evalCtx.Settings, db.KV(), sip.onFlushUpdateMetricUpdate)
 
-	var subscriptionCtx context.Context
-	subscriptionCtx, sip.subscriptionCancel = context.WithCancel(sip.Ctx())
-	sip.subscriptionGroup = ctxgroup.WithContext(subscriptionCtx)
 	sip.workerGroup = ctxgroup.WithContext(sip.Ctx())
 
 	log.Infof(ctx, "starting %d stream partitions", len(sip.spec.PartitionSpecs))
 
-	// Initialize the event streams.
-	subscriptions := make(map[string]streamclient.Subscription)
-	sip.streamPartitionClients = make([]streamclient.Client, 0)
-	for _, partitionSpec := range sip.spec.PartitionSpecs {
-		id := partitionSpec.PartitionID
-		token := streamclient.SubscriptionToken(partitionSpec.SubscriptionToken)
-		addr := partitionSpec.Address
-		redactedAddr, redactedErr := streamclient.RedactSourceURI(addr)
-		if redactedErr != nil {
-			log.Warning(sip.Ctx(), "could not redact stream address")
-		}
-		var streamClient streamclient.Client
-		if sip.forceClientForTests != nil {
-			streamClient = sip.forceClientForTests
-			log.Infof(ctx, "using testing client")
-		} else {
-			streamClient, err = streamclient.NewStreamClient(ctx, streamingccl.StreamAddress(addr), db,
-				streamclient.WithStreamID(streampb.StreamID(sip.spec.StreamID)))
-			if err != nil {
-
-				sip.MoveToDrainingAndLogError(errors.Wrapf(err, "creating client for partition spec %q from %q", token, redactedAddr))
-				return
-			}
-			sip.streamPartitionClients = append(sip.streamPartitionClients, streamClient)
-		}
-
-		if streamingKnobs, ok := sip.FlowCtx.TestingKnobs().StreamingTestingKnobs.(*sql.StreamingTestingKnobs); ok {
-			if streamingKnobs != nil && streamingKnobs.BeforeClientSubscribe != nil {
-				streamingKnobs.BeforeClientSubscribe(addr, string(token), sip.frontier)
-			}
-		}
-
-		sub, err := streamClient.Subscribe(ctx, streampb.StreamID(sip.spec.StreamID), int32(sip.flowCtx.NodeID.SQLInstanceID()), token,
-			sip.spec.InitialScanTimestamp, sip.frontier)
-
-		if err != nil {
-			sip.MoveToDrainingAndLogError(errors.Wrapf(err, "consuming partition %v", redactedAddr))
-			return
-		}
-		subscriptions[id] = sub
-		sip.subscriptionGroup.GoCtx(func(ctx context.Context) error {
-			if err := sub.Subscribe(ctx); err != nil {
-				sip.sendError(errors.Wrap(err, "subscription"))
-			}
-			return nil
-		})
+	// Initialize the event stream.
+	var partitionSpec execinfrapb.StreamIngestionPartitionSpec
+	if l := len(sip.spec.PartitionSpecs); l != 1 {
+		sip.MoveToDrainingAndLogError(errors.Newf("unsupported number of partitions specs: %d", l))
+	}
+	for _, p := range sip.spec.PartitionSpecs {
+		partitionSpec = p
 	}
 
-	sip.mergedSubscription = mergeSubscriptions(sip.Ctx(), subscriptions)
+	token := streamclient.SubscriptionToken(partitionSpec.SubscriptionToken)
+	addr := partitionSpec.Address
+	redactedAddr, redactedErr := streamclient.RedactSourceURI(addr)
+	if redactedErr != nil {
+		log.Warning(sip.Ctx(), "could not redact stream address")
+	}
+	if sip.forceClientForTests != nil {
+		sip.client = sip.forceClientForTests
+		log.Infof(ctx, "using testing client")
+	} else {
+		sip.client, err = streamclient.NewStreamClient(ctx, streamingccl.StreamAddress(addr), db,
+			streamclient.WithStreamID(streampb.StreamID(sip.spec.StreamID)))
+		if err != nil {
+
+			sip.MoveToDrainingAndLogError(errors.Wrapf(err, "creating client for partition spec %q from %q", token, redactedAddr))
+			return
+		}
+	}
+
+	if streamingKnobs, ok := sip.FlowCtx.TestingKnobs().StreamingTestingKnobs.(*sql.StreamingTestingKnobs); ok {
+		if streamingKnobs != nil && streamingKnobs.BeforeClientSubscribe != nil {
+			streamingKnobs.BeforeClientSubscribe(addr, string(token), sip.frontier)
+		}
+	}
+
+	sub, err := sip.client.Subscribe(ctx, streampb.StreamID(sip.spec.StreamID), int32(sip.flowCtx.NodeID.SQLInstanceID()), token,
+		sip.spec.InitialScanTimestamp, sip.frontier)
+	if err != nil {
+		sip.MoveToDrainingAndLogError(errors.Wrapf(err, "consuming partition %v", redactedAddr))
+		return
+	}
+	sip.subscription = sub
+
+	// Everything is setup; now run it.
+
 	sip.workerGroup.GoCtx(func(ctx context.Context) error {
-		if err := sip.mergedSubscription.Run(); err != nil {
-			sip.sendError(errors.Wrap(err, "merge subscription"))
+		if err := sub.Subscribe(ctx); err != nil {
+			sip.sendError(errors.Wrap(err, "subscription"))
 		}
 		return nil
 	})
@@ -557,14 +533,8 @@ func (sip *streamIngestionProcessor) close() {
 
 	defer sip.frontier.Release()
 
-	// Stop the partition client, mergedSubscription, and
-	// cutoverPoller. All other goroutines should exit based on
-	// channel close events.
-	for _, client := range sip.streamPartitionClients {
-		_ = client.Close(sip.Ctx())
-	}
-	if sip.mergedSubscription != nil {
-		sip.mergedSubscription.Close()
+	if sip.client != nil {
+		_ = sip.client.Close(sip.Ctx())
 	}
 	if sip.stopCh != nil {
 		close(sip.stopCh)
@@ -575,13 +545,6 @@ func (sip *streamIngestionProcessor) close() {
 	// and stopCh close above should result in exit signals being
 	// sent to all relevant goroutines.
 	if err := sip.workerGroup.Wait(); err != nil {
-		log.Errorf(sip.Ctx(), "error on close(): %s", err)
-	}
-
-	if sip.subscriptionCancel != nil {
-		sip.subscriptionCancel()
-	}
-	if err := sip.subscriptionGroup.Wait(); err != nil {
 		log.Errorf(sip.Ctx(), "error on close(): %s", err)
 	}
 
@@ -669,7 +632,7 @@ func (sip *streamIngestionProcessor) onFlushUpdateMetricUpdate(batchSummary kvpb
 func (sip *streamIngestionProcessor) consumeEvents(ctx context.Context) error {
 	for {
 		select {
-		case event, ok := <-sip.mergedSubscription.Events():
+		case event, ok := <-sip.subscription.Events():
 			if !ok {
 				// eventCh is closed, flush and exit.
 				if err := sip.flush(); err != nil {
@@ -702,7 +665,7 @@ func (sip *streamIngestionProcessor) consumeEvents(ctx context.Context) error {
 
 }
 
-func (sip *streamIngestionProcessor) handleEvent(event partitionEvent) error {
+func (sip *streamIngestionProcessor) handleEvent(event streamingccl.Event) error {
 	sv := &sip.FlowCtx.Cfg.Settings.SV
 
 	if event.Type() == streamingccl.KVEvent {
@@ -903,7 +866,7 @@ func (sip *streamIngestionProcessor) bufferKVs(kvs []roachpb.KeyValue) error {
 	return nil
 }
 
-func (sip *streamIngestionProcessor) bufferCheckpoint(event partitionEvent) error {
+func (sip *streamIngestionProcessor) bufferCheckpoint(event streamingccl.Event) error {
 	if streamingKnobs, ok := sip.FlowCtx.TestingKnobs().StreamingTestingKnobs.(*sql.StreamingTestingKnobs); ok {
 		if streamingKnobs != nil && streamingKnobs.ElideCheckpointEvent != nil {
 			if streamingKnobs.ElideCheckpointEvent(sip.FlowCtx.NodeID.SQLInstanceID(), sip.frontier.Frontier()) {
