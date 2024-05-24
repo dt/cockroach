@@ -178,7 +178,7 @@ func sendAddRemoteSSTs(
 	}
 
 	approxRows, approxDataSize, err = linkExternalFiles(
-		ctx, execCtx, genSpan, *kr, fromSystemTenant, requestFinishedCh,
+		ctx, execCtx, genSpan, *kr, fromSystemTenant, requestFinishedCh, targetSpanSize,
 	)
 	return approxRows, approxDataSize, errors.Wrap(err, "failed to ingest into remote files")
 }
@@ -231,6 +231,7 @@ func linkExternalFiles(
 	kr KeyRewriter,
 	fromSystemTenant bool,
 	requestFinishedCh chan<- struct{},
+	targetSpanSize int64,
 ) (approxRows int64, approxDataSize int64, err error) {
 	ctx, sp := tracing.ChildSpan(ctx, "backupccl.linkExternalFiles")
 	defer sp.Finish()
@@ -245,7 +246,7 @@ func linkExternalFiles(
 	grp.GoCtx(func(ctx context.Context) error { return genSpans(ctx, ch) })
 	for i := 0; i < workers; i++ {
 		grp.GoCtx(sendAddRemoteSSTWorker(
-			execCtx, ch, requestFinishedCh, kr, fromSystemTenant, &approxRows, &approxDataSize,
+			execCtx, ch, requestFinishedCh, kr, fromSystemTenant, targetSpanSize, &approxRows, &approxDataSize,
 		))
 	}
 	if err := grp.Wait(); err != nil {
@@ -260,10 +261,12 @@ func sendAddRemoteSSTWorker(
 	requestFinishedCh chan<- struct{},
 	kr KeyRewriter,
 	fromSystemTenant bool,
+	targetSpanSize int64,
 	approxRows *int64,
 	approxDataSize *int64,
 ) func(context.Context) error {
 	return func(ctx context.Context) error {
+		var sinceSplit int64
 		for entry := range restoreSpanEntriesCh {
 			log.Infof(ctx, "starting restore span %s with %d files", entry.Span, len(entry.Files))
 
@@ -271,10 +274,35 @@ func sendAddRemoteSSTWorker(
 				return err
 			}
 
-			for _, file := range entry.Files {
+			for i, file := range entry.Files {
 				if err := assertCommonPrefix(file.BackupFileEntrySpan, entry.ElidedPrefix); err != nil {
 					return err
 				}
+
+				// Check if the next backup span is in the same backing SST and adjacent
+				// to this span, and if the size of combining it with this span with it
+				// and sending both would not cause the running ingested total to exceed
+				// the limit at which the split phase split the range. If all of these
+				// conditions hold, we can just widen the next span to include this span
+				// and update the stats accordingly then move on to process that span.
+				// Doing this allows us to send fewer, larger external files to ingest.
+				if len(entry.Files) > i+1 {
+					next := entry.Files[i+1]
+					if sameSST := file.Dir == next.Dir && file.Path == next.Path; sameSST {
+					 if adjacent := a.BackupFileEntrySpan.EndKey.Equal(b.BackupFileEntrySpan.Key); adjacent {
+						mergedSize := file.BackupFileEntryCounts.DataSize + next.BackupFileEntryCounts.DataSize
+						if sinceSplit + mergedSize < targetSpanSize {
+							entry.Files[i+1].BackupFileEntrySpan.Key = file.BackupFileEntrySpan.Key
+							entry.Files[i+1].ApproximatePhysicalSize += file.ApproximatePhysicalSize
+							entry.Files[i+1].BackupFileEntryCounts.Add(file.BackupFileEntryCounts)
+							continue
+						}
+					}
+				}
+				if sinceSplit+file.BackupFileEntryCounts.DataSize > targetSpanSize {
+					sinceSplit = 0
+				}
+				sinceSplit += file.BackupFileEntryCounts.DataSize
 
 				restoringSubspan := file.BackupFileEntrySpan.Intersect(entry.Span)
 				if !restoringSubspan.Valid() {
