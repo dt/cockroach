@@ -37,6 +37,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/span"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
@@ -90,6 +91,19 @@ type logicalReplicationWriterProcessor struct {
 	logBufferEvery log.EveryN
 
 	debug streampb.DebugLogicalConsumerStatus
+
+	purgatory struct {
+		mu    syncutil.Mutex
+		queue []purgatoryBatch
+	}
+}
+
+type purgatoryBatch struct {
+	started     time.Time
+	attempts    int
+	lastAttempt time.Time
+	events      []streampb.StreamEvent_KV
+	resolve     crosscluster.Event
 }
 
 var (
@@ -373,7 +387,7 @@ func (lrw *logicalReplicationWriterProcessor) handleEvent(
 			return err
 		}
 	case crosscluster.CheckpointEvent:
-		if err := lrw.checkpoint(ctx, event); err != nil {
+		if err := lrw.maybeCheckpoint(ctx, event); err != nil {
 			return err
 		}
 	case crosscluster.SSTableEvent, crosscluster.DeleteRangeEvent:
@@ -388,6 +402,23 @@ func (lrw *logicalReplicationWriterProcessor) handleEvent(
 		return errors.Newf("unknown streaming event type %v", event.Type())
 	}
 	return nil
+}
+
+func (lrw *logicalReplicationWriterProcessor) maybeCheckpoint(
+	ctx context.Context, event crosscluster.Event,
+) error {
+
+	// If purgatory is empty, just emit the checkpoint now.
+	if len(lrw.purgatory.queue) == 0 {
+		return lrw.checkpoint(ctx, event)
+	}
+
+	// If purgatory is not empty, close the current batch and open a new one after
+	// marking the current one as resolving this checkpoint.
+	lrw.purgatory.queue[len(lrw.purgatory.queue)-1].resolve = event
+	lrw.purgatory.queue = append(lrw.purgatory.queue, purgatoryBatch{})
+
+	return lrw.maybeDrainPurgatory(ctx)
 }
 
 func (lrw *logicalReplicationWriterProcessor) checkpoint(
@@ -524,6 +555,10 @@ func (lrw *logicalReplicationWriterProcessor) flushBuffer(
 	lrw.metrics.StreamBatchNanosHist.RecordValue(flushTime)
 	lrw.metrics.StreamBatchRowsHist.RecordValue(keyCount)
 	lrw.metrics.StreamBatchBytesHist.RecordValue(byteCount)
+	return nil
+}
+
+func (lrw *logicalReplicationWriterProcessor) maybeDrainPurgatory(ctx context.Context) error {
 	return nil
 }
 
