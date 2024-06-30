@@ -525,18 +525,50 @@ func (lrw *logicalReplicationWriterProcessor) flushChunk(
 		batch := chunk[:min(batchSize, len(chunk))]
 		chunk = chunk[len(batch):]
 		preBatchTime := timeutil.Now()
-		s, err := bh.HandleBatch(ctx, batch)
-		if err != nil {
-			// TODO(ssd): Handle errors. We should perhaps split the batch and retry a portion of the batch.
-			// If that fails, send the failed application to the dead-letter-queue.
-			return batchStats{}, err
+
+		if s, err := bh.HandleBatch(ctx, batch); err != nil {
+			// If it already failed while applying on its own, handle the failure.
+			if len(batch) == 1 {
+				if err := lrw.handleFailedApply(ctx, batch[0], err); err != nil {
+					return batchStats{}, err
+				}
+			} else {
+				// If there were multiple events in the batch, give each its own chance
+				// to apply on its own before switching to handle its failure.
+				for i := range batch {
+					if singleStats, err := bh.HandleBatch(ctx, batch); err != nil {
+						// If we
+						if err := lrw.handleFailedApply(ctx, batch[i], err); err != nil {
+							return batchStats{}, err
+						}
+					} else {
+						stats.Add(singleStats)
+					}
+				}
+			}
+		} else {
+			stats.Add(s)
 		}
-		stats.Add(s)
+
 		batchTime := timeutil.Since(preBatchTime)
 		lrw.debug.RecordBatchApplied(batchTime, int64(len(batch)))
 		lrw.metrics.ApplyBatchNanosHist.RecordValue(batchTime.Nanoseconds())
 	}
 	return stats, nil
+}
+
+// handleFailedApply handles a row update that fails to apply, either queueing
+// it for retry (and ensuring the frontier does not advance until it is resolved
+// one way or the other) or by durably recording it in a DLQ, or errors out if
+// it cannot do either.
+//
+// TODO(dt): implement something here.
+// TODO(dt): plumb the cdcevent.Row to this.
+func (lrw *logicalReplicationWriterProcessor) handleFailedApply(
+	ctx context.Context, event streampb.StreamEvent_KV, applyErr error,
+) error {
+	// TODO(dt): try to handle the error.
+	return applyErr
 }
 
 type batchStats struct {
