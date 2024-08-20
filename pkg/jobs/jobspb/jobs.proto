@@ -251,6 +251,15 @@ message LogicalReplicationDetails {
     int32 function_id = 2;
   }
   DefaultConflictResolution default_conflict_resolution = 7 [(gogoproto.nullable) = false];
+
+  enum ApplyMode {
+    Immediate = 0;
+    Validated = 1;
+  }
+
+  ApplyMode mode = 8;
+
+  // Next ID: 9.
 }
 
 message LogicalReplicationProgress {

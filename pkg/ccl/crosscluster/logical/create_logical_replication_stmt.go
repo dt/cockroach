@@ -208,6 +208,17 @@ func createLogicalReplicationStreamPlanHook(
 			defaultConflictResolution = *cr
 		}
 
+		mode := jobspb.LogicalReplicationDetails_Immediate
+		if m, ok := options.GetMode(); ok {
+			switch m {
+			case "validated":
+				mode = jobspb.LogicalReplicationDetails_Validated
+			case "immediate":
+			default:
+				return pgerror.Newf(pgcode.InvalidParameterValue, "unknown mode %q", m)
+			}
+		}
+
 		jr := jobs.Record{
 			JobID:       p.ExecCfg().JobRegistry.MakeJobID(),
 			Description: fmt.Sprintf("LOGICAL REPLICATION STREAM into %s from %s", targetsDescription, streamAddress),
@@ -220,6 +231,7 @@ func createLogicalReplicationStreamPlanHook(
 				ReplicationPairs:          repPairs,
 				TableNames:                srcTableNames,
 				DefaultConflictResolution: defaultConflictResolution,
+				Mode:                      mode,
 			},
 			Progress: progress,
 		}

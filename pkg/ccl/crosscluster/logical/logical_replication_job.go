@@ -419,7 +419,9 @@ func (p *logicalReplicationPlanner) generatePlanImpl(
 		progress.Checkpoint,
 		tablesMd,
 		p.job.ID(),
-		streampb.StreamID(payload.StreamID))
+		streampb.StreamID(payload.StreamID),
+		payload.Mode,
+	)
 	if err != nil {
 		return nil, nil, info, err
 	}
