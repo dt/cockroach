@@ -100,6 +100,8 @@ func prepareInsertOrUpdateBatch(
 	rawValueBuf []byte,
 	putFn func(ctx context.Context, b Putter, key *roachpb.Key, value *roachpb.Value, traceKV bool),
 	overwrite, traceKV bool,
+	useCPut bool,
+	oldValues []tree.Datum,
 ) ([]byte, error) {
 	families := helper.TableDesc.GetFamilies()
 	for i := range families {
@@ -163,13 +165,23 @@ func prepareInsertOrUpdateBatch(
 				if err := helper.CheckRowSize(ctx, kvKey, marshaled.RawBytes, family.ID); err != nil {
 					return nil, err
 				}
-				putFn(ctx, batch, kvKey, &marshaled, traceKV)
+				if useCPut {
+					old, err := valueside.MarshalLegacy(typ, oldValues[idx])
+					if err != nil {
+						return nil, err
+					}
+					insertCPutExpFn(ctx, batch, kvKey, &marshaled, old.RawBytes, traceKV)
+				} else {
+					putFn(ctx, batch, kvKey, &marshaled, traceKV)
+				}
 			}
 
 			continue
 		}
 
 		rawValueBuf = rawValueBuf[:0]
+		var old *roachpb.Value
+		var oldBytes []byte
 
 		var lastColID descpb.ColumnID
 		familySortedColumnIDs, ok := helper.SortedColumnFamily(family.ID)
@@ -198,6 +210,13 @@ func prepareInsertOrUpdateBatch(
 			if err != nil {
 				return nil, err
 			}
+			if useCPut {
+				var err error
+				oldBytes, err = valueside.Encode(oldBytes, colIDDelta, oldValues[idx], nil)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
 
 		if family.ID != 0 && len(rawValueBuf) == 0 {
@@ -214,7 +233,13 @@ func prepareInsertOrUpdateBatch(
 			if err := helper.CheckRowSize(ctx, kvKey, kvValue.RawBytes, family.ID); err != nil {
 				return nil, err
 			}
-			putFn(ctx, batch, kvKey, kvValue, traceKV)
+			if useCPut {
+				old = &roachpb.Value{}
+				old.SetTuple(oldBytes)
+				insertCPutExpFn(ctx, batch, kvKey, kvValue, old.RawBytes, traceKV)
+			} else {
+				putFn(ctx, batch, kvKey, kvValue, traceKV)
+			}
 		}
 
 		// Release reference to roachpb.Key.

@@ -91,6 +91,17 @@ func insertCPutFn(
 	b.CPut(key, value, nil /* expValue */)
 }
 
+func insertCPutExpFn(
+	ctx context.Context, b Putter, key *roachpb.Key, value *roachpb.Value, exp []byte, traceKV bool,
+) {
+	// TODO(dan): We want do this V(2) log everywhere in sql. Consider making a
+	// client.Batch wrapper instead of inlining it everywhere.
+	if traceKV {
+		log.VEventfDepth(ctx, 1, 2, "CPut %s -> %s (from %s)", *key, value.PrettyPrint(), roachpb.Value{RawBytes: exp}.PrettyPrint())
+	}
+	b.CPut(key, value, exp)
+}
+
 // insertPutFn is used by insertRow when conflicts should be ignored.
 func insertPutFn(
 	ctx context.Context, b Putter, key *roachpb.Key, value *roachpb.Value, traceKV bool,
@@ -162,7 +173,7 @@ func (ri *Inserter) InsertRow(
 		&ri.Helper, primaryIndexKey, ri.InsertCols,
 		values, ri.InsertColIDtoRowIndex,
 		ri.InsertColIDtoRowIndex,
-		&ri.key, &ri.value, ri.valueBuf, putFn, overwrite, traceKV)
+		&ri.key, &ri.value, ri.valueBuf, putFn, overwrite, traceKV, false, nil)
 	if err != nil {
 		return err
 	}

@@ -53,6 +53,9 @@ type Updater struct {
 	value           roachpb.Value
 	oldIndexEntries [][]rowenc.IndexEntry
 	newIndexEntries [][]rowenc.IndexEntry
+
+	// CPutPK can be toggled on to force the
+	CPutPK bool
 }
 
 type rowUpdaterType int
@@ -371,7 +374,8 @@ func (ru *Updater) UpdateRow(
 		&ru.Helper, primaryIndexKey, ru.FetchCols,
 		ru.newValues, ru.FetchColIDtoRowIndex,
 		ru.UpdateColIDtoRowIndex,
-		&ru.key, &ru.value, ru.valueBuf, insertPutFn, true /* overwrite */, traceKV)
+		&ru.key, &ru.value, ru.valueBuf, insertPutFn, true /* overwrite */, traceKV,
+		ru.CPutPK, oldValues)
 	if err != nil {
 		return nil, err
 	}
