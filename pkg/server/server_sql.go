@@ -1285,6 +1285,7 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 			Stopper:       cfg.stopper,
 			KeyVisKnobs:   keyVisKnobs,
 			SQLStatsKnobs: sqlStatsKnobs,
+			ReaderTenant:  cfg.tenantConnect,
 		}
 
 		knobs, _ := cfg.TestingKnobs.UpgradeManager.(*upgradebase.TestingKnobs)
