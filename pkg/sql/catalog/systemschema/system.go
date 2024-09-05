@@ -222,29 +222,26 @@ CREATE TABLE system.ui (
 	JobsTableSchema = `
 CREATE TABLE system.jobs (
 	id                INT8      DEFAULT unique_rowid(),
-	status            STRING    NOT NULL,
-	created           TIMESTAMP NOT NULL DEFAULT now(),
-	dropped_payload   BYTES NOT VISIBLE,
-	dropped_progress  BYTES NOT VISIBLE,
-	created_by_type   STRING,
-	created_by_id     INT,
-	claim_session_id  BYTES,
-	claim_instance_id INT8,
-	num_runs          INT8,
-	last_run          TIMESTAMP,
-	job_type              STRING,
+	status            STRING    NOT NULL,  -- the state of the job in the job state machine (running/paused/failed/etc).
+	created           TIMESTAMP NOT NULL DEFAULT now(), -- the time at which the job was created.
+	dropped_payload   BYTES NOT VISIBLE, -- unused; retrained in the schema only for legacy reasons to avoid index rewrites.
+	dropped_progress  BYTES NOT VISIBLE, -- unused; retrained in the schema only for legacy reasons to avoid index rewrites.
+	created_by_type   STRING,  -- if the job was created by an internal process like a schedule
+	created_by_id     INT, -- the id of internal process that created the job.
+	claim_session_id  BYTES, -- the liveness session of the node that claimed the job.
+	claim_instance_id INT8, -- the node that has resumed the job.
+	num_runs          INT8, -- total number of times the job has been resumed.
+	last_run          TIMESTAMP, -- the most recent time the job was resumed.
+	job_type          STRING, -- the job's type, used to lookup the resumer to run.
+	-- Indexes
 	CONSTRAINT "primary" PRIMARY KEY (id),
 	INDEX (status, created),
 	INDEX (created_by_type, created_by_id) STORING (status),
-	INDEX jobs_run_stats_idx (
-    claim_session_id,
-    status,
-    created
-  ) STORING(last_run, num_runs, claim_instance_id)
-    WHERE ` + JobsRunStatsIdxPredicate + `,
+	INDEX jobs_run_stats_idx (claim_session_id, status, created) STORING(last_run, num_runs, claim_instance_id) WHERE ` + JobsRunStatsIdxPredicate + `,
   INDEX jobs_job_type_idx (job_type),
+	-- Families
 	FAMILY fam_0_id_status_created_payload (id, status, created, dropped_payload, created_by_type, created_by_id, job_type),
-	FAMILY progress (dropped_progress),
+	FAMILY progress (dropped_progress), -- only retained for legacy reasons; unused.
 	FAMILY claim (claim_session_id, claim_instance_id, num_runs, last_run)
 );`
 
