@@ -83,7 +83,7 @@ var indexBackfillElasticCPUControlEnabled = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"bulkio.index_backfill.elastic_control.enabled",
 	"determines whether index backfill operations integrate with elastic CPU control",
-	false, // TODO(dt): enable this by default after more benchmarking.
+	true,
 )
 
 func newIndexBackfiller(
