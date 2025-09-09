@@ -22,7 +22,7 @@ var cpuPacerRequestDuration = settings.RegisterDurationSetting(
 	settings.ApplicationLevel,
 	"bulkio.elastic_cpu_control.request_duration",
 	"exeuction time unit to request when pacing CPU requests during various bulk operations",
-	50*time.Millisecond,
+	10*time.Millisecond,
 )
 
 // NewCPUPacer creates a new AC pacer for SST batcher. It may return an empty
