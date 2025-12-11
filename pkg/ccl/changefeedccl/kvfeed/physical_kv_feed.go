@@ -157,6 +157,7 @@ func (p *rangefeed) handleRangefeedEvent(ctx context.Context, e *kvpb.RangeFeedE
 		timer.End()
 	case *kvpb.RangeFeedCheckpoint:
 		ev := e.ShallowCopy()
+		messWithTimestamp(ev.Checkpoint)
 		ev.Checkpoint.ResolvedTS = quantizeTS(ev.Checkpoint.ResolvedTS, p.cfg.WithFrontierQuantize)
 		if resolvedTs := ev.Checkpoint.ResolvedTS; !resolvedTs.IsEmpty() && resolvedTs.Less(p.cfg.Frontier) {
 			// RangeFeed happily forwards any closed timestamps it receives as

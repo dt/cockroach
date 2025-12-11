@@ -12,6 +12,8 @@ package kvfeed
 import (
 	"context"
 	"fmt"
+	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
@@ -22,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
@@ -843,6 +846,7 @@ func copyFromSourceToDestUntilTableEvent(
 			case kvevent.TypeKV, kvevent.TypeFlush:
 				return dest.Add(ctx, e)
 			case kvevent.TypeResolved:
+
 				// TODO(ajwerner): technically this doesn't need to happen for most
 				// events - we just need to make sure we forward for events which are
 				// at boundary.Prev(). We may not yet know about that boundary.
@@ -900,8 +904,32 @@ func copyFromSourceToDestUntilTableEvent(
 		if err != nil {
 			return err
 		}
+		switch e.Type() {
+		case kvevent.TypeResolved:
+			// DO NO MERGE.
+			// This rapidly toggles the Logical field between 0 and MaxInt32 to
+			// induce a race condition with concurrent proto serialization. If the
+			// event is properly copied (not shared), this is harmless. If it's
+			// shared with a gRPC sender, the size mismatch will cause a panic
+			// during MarshalToSizedBuffer.
+			if checkpoint := e.Raw().Checkpoint; checkpoint != nil {
+				messWithTimestamp(checkpoint)
+			}
+		}
 		if err := checkAndCopyEvent(e); err != nil {
 			return err
 		}
 	}
+}
+
+func messWithTimestamp(checkpoint *kvpb.RangeFeedCheckpoint) {
+	originalTS := checkpoint.ResolvedTS
+	for round := 0; round < 1000; round++ {
+		for i := 0; i < 100; i++ {
+			atomic.StoreInt32(&checkpoint.ResolvedTS.Logical, math.MaxInt32)
+			atomic.StoreInt32(&checkpoint.ResolvedTS.Logical, 0)
+		}
+		time.Sleep(time.Microsecond)
+	}
+	checkpoint.ResolvedTS = originalTS
 }
