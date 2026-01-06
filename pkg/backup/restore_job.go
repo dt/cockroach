@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/backup/backupencryption"
 	"github.com/cockroachdb/cockroach/pkg/backup/backupinfo"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuppb"
+	"github.com/cockroachdb/cockroach/pkg/backup/continuous"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
 	"github.com/cockroachdb/cockroach/pkg/cloud/cloudpb"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
@@ -2126,6 +2127,23 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 
 		resTotal.Add(res)
 		log.Dev.Infof(ctx, "finished restoring the main data bundle")
+	}
+
+	// If PITR log replay is configured, replay continuous log events to bring
+	// the data up to the target restore time.
+	if details.ContinuousLogFolder != "" {
+		// The backup end time is the start of log replay - events in
+		// (backupEndTime, details.EndTime] are replayed.
+		backupEndTime := backupManifests[lastBackupIndex].EndTime
+		log.Dev.Infof(ctx, "replaying continuous log from %s to %s",
+			backupEndTime, details.EndTime)
+		replayStats, err := continuous.ReplayLog(ctx, p, details.ContinuousLogFolder,
+			backupEndTime, details.EndTime)
+		if err != nil {
+			return errors.Wrap(err, "replaying continuous log")
+		}
+		log.Dev.Infof(ctx, "log replay complete: %d events applied, %d skipped",
+			replayStats.EventsApplied, replayStats.EventsSkipped)
 	}
 
 	if err := insertStats(ctx, r.job, p.ExecCfg(), remappedStats); err != nil {

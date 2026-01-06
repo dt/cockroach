@@ -217,7 +217,12 @@ message ScheduledBackupExecutionArgs {
   // A value of 0 indicates that there is no compaction job running.
   int64 compaction_job_id = 9 [(gogoproto.customname) = "CompactionJobID", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/jobs/jobspb.JobID"];
 
-  // Next ID: 10
+  // Continuous indicates that continuous backup (PITR logging) is enabled.
+  // When enabled, a continuous backup job will be started after each
+  // incremental backup completes to capture changes until the next backup.
+  bool continuous = 10;
+
+  // Next ID: 11
 }
 
 // RestoreProgress is the information that the RestoreData processor sends back

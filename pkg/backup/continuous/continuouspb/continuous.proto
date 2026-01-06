@@ -1,0 +1,26 @@
+// Copyright 2024 The Cockroach Authors.
+//
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
+
+syntax = "proto3";
+package cockroach.backup.continuous;
+option go_package = "github.com/cockroachdb/cockroach/pkg/backup/continuous/continuouspb";
+
+import "gogoproto/gogo.proto";
+import "util/hlc/timestamp.proto";
+
+// ResolvedCheckpoint is written to storage to mark a consistent point in time.
+// It lists all data files that have been flushed since the previous checkpoint.
+message ResolvedCheckpoint {
+  // resolved_ts is the global resolved timestamp. All events with timestamps
+  // <= resolved_ts are guaranteed to be captured in files listed in this or
+  // previous checkpoints.
+  util.hlc.Timestamp resolved_ts = 1 [(gogoproto.nullable) = false];
+
+  // file_ids lists the unique IDs of data files included in this checkpoint.
+  // Each ID is generated via unique.GenerateUniqueInt() and maps to a file
+  // at path "data/<id>.sst". Only files listed here are safe to read - this
+  // acts as an explicit "commit" to handle partial uploads and orphaned files.
+  repeated int64 file_ids = 2;
+}

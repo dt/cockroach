@@ -7,8 +7,10 @@ package backup
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/backup/backupbase"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuppb"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
@@ -20,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
+	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
@@ -147,8 +150,86 @@ func (e *scheduledBackupExecutor) executeBackup(
 	if err != nil {
 		return err
 	}
-	_, err = invokeBackup(ctx, backupFn, nil, nil)
-	return err
+	if _, err = invokeBackup(ctx, backupFn, nil, nil); err != nil {
+		return err
+	}
+
+	// If continuous backup is enabled, also start a continuous logging job.
+	if args.Continuous {
+		if err := e.startContinuousBackupJob(ctx, planner, backupStmt, sj); err != nil {
+			// Log but don't fail the backup - the backup itself succeeded.
+			log.Dev.Warningf(ctx, "failed to start continuous backup job: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// startContinuousBackupJob creates and starts a continuous backup (PITR logging) job.
+// The continuous job captures rangefeed events from the backup's end time until a
+// newer backup appears in the collection.
+func (e *scheduledBackupExecutor) startContinuousBackupJob(
+	ctx context.Context,
+	planner sql.PlanHookState,
+	backupStmt *annotatedBackupStatement,
+	sj *jobs.ScheduledJob,
+) error {
+	// Extract the collection URI from the backup statement.
+	if len(backupStmt.To) == 0 {
+		return errors.New("backup statement has no destination")
+	}
+	collectionURI, ok := backupStmt.To[0].(*tree.StrVal)
+	if !ok {
+		return errors.Errorf("unexpected destination type %T", backupStmt.To[0])
+	}
+
+	// The continuous job's start time is the backup's end time (AOST).
+	if backupStmt.AsOf.Expr == nil {
+		return errors.New("backup statement missing AS OF SYSTEM TIME clause")
+	}
+	asOfExpr, ok := backupStmt.AsOf.Expr.(*tree.DTimestampTZ)
+	if !ok {
+		return errors.Errorf("unexpected AsOf type %T", backupStmt.AsOf.Expr)
+	}
+	endTime := hlc.Timestamp{WallTime: asOfExpr.Time.UnixNano()}
+
+	// Compute the log folder path: <collection>/<backup_subdir>/log/
+	// The backup subdir is date-based (e.g., /2024/01/15-140000.00), same as the backup itself.
+	// This ensures the log is stored as a subfolder of its associated backup.
+	backupSubdir := endTime.GoTime().Format(backupbase.DateBasedIntoFolderName)
+	logFolder := fmt.Sprintf("%s%s/log", collectionURI.RawString(), backupSubdir)
+
+	// Create the continuous backup job details.
+	details := jobspb.BackupDetails{
+		EndTime:             endTime,
+		Continuous:          true,
+		ContinuousLogFolder: logFolder,
+		CollectionURI:       collectionURI.RawString(),
+	}
+
+	jr := jobs.Record{
+		Description: fmt.Sprintf("continuous backup for schedule %d", sj.ScheduleID()),
+		Details:     details,
+		Progress:    jobspb.BackupProgress{},
+		Username:    sj.Owner(),
+		CreatedBy: &jobs.CreatedByInfo{
+			Name: jobs.CreatedByScheduledJobs,
+			ID:   int64(sj.ScheduleID()),
+		},
+	}
+
+	// Create the job. Use CreateAdoptableJobWithTxn so it can be adopted by any node.
+	jobID := planner.ExecCfg().JobRegistry.MakeJobID()
+	if _, err := planner.ExecCfg().JobRegistry.CreateAdoptableJobWithTxn(
+		ctx, jr, jobID, planner.InternalSQLTxn(),
+	); err != nil {
+		return errors.Wrap(err, "creating continuous backup job")
+	}
+
+	log.Dev.Infof(ctx, "started continuous backup job %d for schedule %d, logging from %s to %s",
+		jobID, sj.ScheduleID(), endTime, logFolder)
+
+	return nil
 }
 
 func invokeBackup(

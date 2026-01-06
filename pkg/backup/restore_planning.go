@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/backup/backupinfo"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuppb"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuputils"
+	"github.com/cockroachdb/cockroach/pkg/backup/continuous"
 	"github.com/cockroachdb/cockroach/pkg/ccl/multiregionccl"
 	"github.com/cockroachdb/cockroach/pkg/ccl/storageccl"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
@@ -2075,6 +2076,41 @@ func doRestorePlan(
 		encodedTables[i] = table.TableDesc()
 	}
 
+	// Check if PITR (point-in-time recovery) is needed.
+	// PITR is needed when the target restore time is after the backup's end time.
+	var continuousLogFolder string
+	var backupEndTime hlc.Timestamp
+	lastManifestIdx := len(mainBackupManifests) - 1
+	backupEndTime = mainBackupManifests[lastManifestIdx].EndTime
+	if backupEndTime.Less(endTime) {
+		// Target time is after backup end time - look for continuous log.
+		logFolder, maxResolved, err := continuous.FindContinuousLogFolder(
+			ctx,
+			p.ExecCfg().DistSQLSrv.ExternalStorageFromURI,
+			p.User(),
+			defaultCollectionURI,
+			backupEndTime,
+			endTime,
+		)
+		if err != nil {
+			return errors.Wrap(err, "looking for continuous backup log")
+		}
+		if logFolder != "" {
+			log.Dev.Infof(ctx, "found continuous log at %s, max resolved %s", logFolder, maxResolved)
+			if endTime.Less(maxResolved) || endTime.Equal(maxResolved) {
+				continuousLogFolder = logFolder
+			} else {
+				return errors.Errorf(
+					"cannot restore to %s: continuous log only covers up to %s",
+					endTime, maxResolved)
+			}
+		} else {
+			return errors.Errorf(
+				"cannot restore to %s: no backup or continuous log covers this time (backup ends at %s)",
+				endTime, backupEndTime)
+		}
+	}
+
 	restoreDetails := jobspb.RestoreDetails{
 		EndTime:            endTime,
 		DescriptorRewrites: descriptorRewrites,
@@ -2103,6 +2139,7 @@ func doRestorePlan(
 		ExperimentalCopy:                 restoreStmt.Options.ExperimentalCopy,
 		RemoveRegions:                    restoreStmt.Options.RemoveRegions,
 		UnsafeRestoreIncompatibleVersion: restoreStmt.Options.UnsafeRestoreIncompatibleVersion,
+		ContinuousLogFolder:              continuousLogFolder,
 	}
 
 	jr := jobs.Record{

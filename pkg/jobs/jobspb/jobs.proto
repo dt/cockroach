@@ -503,7 +503,19 @@ message BackupDetails {
   // with locality tag X.
   bool strict_locality_filtering = 28;
 
-  // NEXT ID: 29;
+  // Continuous is set if the job is a continuous backup (PITR log) job.
+  // When set, the job captures rangefeed events and writes them to time-ordered
+  // SST files alongside RESOLVED checkpoints for point-in-time recovery.
+  // The log starts at StartTime and continues until a newer backup appears
+  // in the backup index or max_duration is exceeded.
+  bool continuous = 29;
+
+  // ContinuousLogFolder is the path where continuous backup log files are written.
+  // This is typically a subfolder of the incremental backup (e.g., "inc-t14/log/").
+  // Only meaningful when Continuous is true.
+  string continuous_log_folder = 30;
+
+  // NEXT ID: 31;
 }
 
 message BackupProgress {
@@ -664,7 +676,15 @@ message RestoreDetails {
 
   bool experimental_copy = 37;
 
-  // NEXT ID: 38.
+  // ContinuousLogFolder is the path to the continuous backup log folder.
+  // If set, the restore will replay log events after restoring the backup
+  // data to bring the data up to EndTime. The backup's end time (from the
+  // manifest) is used as the start time for log replay.
+  string continuous_log_folder = 38;
+
+  // Field 39 was backup_end_time, removed as it's redundant with backup manifest.
+
+  // NEXT ID: 40.
 }
 
 

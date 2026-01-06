@@ -3,6 +3,7 @@
 PROTOBUF_SRCS = [
     "//pkg/acceptance/cluster:cluster_go_proto",
     "//pkg/backup/backuppb:backuppb_go_proto",
+    "//pkg/backup/continuous/continuouspb:continuouspb_go_proto",
     "//pkg/blobs/blobspb:blobspb_go_proto",
     "//pkg/build/bazel/bes/command_line:command_line_go_proto",
     "//pkg/build/bazel/bes/failure_details:failure_details_go_proto",

@@ -914,6 +914,8 @@ GO_TARGETS = [
     "//pkg/backup/backuptestutils:backuptestutils",
     "//pkg/backup/backuputils:backuputils",
     "//pkg/backup/backuputils:backuputils_test",
+    "//pkg/backup/continuous/continuouspb:continuouspb",
+    "//pkg/backup/continuous:continuous",
     "//pkg/backup/testgen:testgen",
     "//pkg/backup/testgen:testgen_lib",
     "//pkg/backup:backup",

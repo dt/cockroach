@@ -20,6 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/backup/backupinfo"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuppb"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuputils"
+	"github.com/cockroachdb/cockroach/pkg/backup/continuous"
 	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/ccl/kvccl/kvfollowerreadsccl"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
@@ -520,6 +521,11 @@ func (b *backupResumer) Resume(ctx context.Context, execCtx interface{}) error {
 	if initialDetails.Compact {
 		return b.ResumeCompaction(ctx, initialDetails, p, &kmsEnv)
 	}
+
+	if initialDetails.Continuous {
+		return continuous.Resume(ctx, b.job, p, initialDetails)
+	}
+
 	// Resolve the backup destination. We can skip this step if we
 	// have already resolved and persisted the destination either
 	// during a previous resumption of this job.
