@@ -7260,6 +7260,98 @@ func MVCCFindSplitKey(
 		key = roachpb.RKey(keys.LocalMax)
 	}
 
+	// Fast path: if the reader is an Engine, use ApproximateSplitKey which
+	// finds a split point using only SST metadata and index blocks, avoiding
+	// the O(n) iteration over every MVCC key.
+	if engine, ok := reader.(Engine); ok {
+		splitKey, err := mvccFindSplitKeyApproximate(ctx, engine, key, endKey)
+		if err != nil {
+			return nil, err
+		}
+		if splitKey != nil {
+			return splitKey, nil
+		}
+		// Fall through to the iterative approach if the fast path could not
+		// produce a valid split key (e.g. range too small, key in NoSplitSpans,
+		// or before minSplitKey).
+	}
+
+	return mvccFindSplitKeyIterative(ctx, reader, key, endKey, targetSize)
+}
+
+// mvccFindSplitKeyApproximate attempts to find a split key using Pebble's
+// ApproximateSplitKey, which uses SST metadata and index blocks to find an
+// approximate midpoint without reading data blocks. Returns nil if the fast
+// path cannot produce a valid split key.
+func mvccFindSplitKeyApproximate(
+	ctx context.Context, engine Engine, key, endKey roachpb.RKey,
+) (roachpb.Key, error) {
+	approxKey, ok, err := engine.ApproximateSplitKey(key.AsRawKey(), endKey.AsRawKey())
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+
+	// Ensure the key does not fall in the middle of a SQL row.
+	// EnsureSafeSplitKey strips the column family ID suffix from SQL table
+	// keys, rewinding from "middle of row" to "start of same row." For
+	// non-table keys (system, meta), the key doesn't have a column family
+	// suffix and parsing fails — this is expected, and the iterative path
+	// handles these ranges.
+	splitKey, err := keys.EnsureSafeSplitKey(approxKey)
+	if err != nil || len(splitKey) == 0 {
+		return nil, nil
+	}
+
+	// Validate against NoSplitSpans.
+	if !isValidSplitKey(splitKey, keys.NoSplitSpans) {
+		return nil, nil
+	}
+
+	// Compute the minimum split key to ensure we don't split before the
+	// end of the first row. This requires a single iterator seek.
+	it, err := engine.NewMVCCIterator(
+		ctx, MVCCKeyAndIntentsIterKind, IterOptions{
+			UpperBound:   endKey.AsRawKey(),
+			ReadCategory: fs.BatchEvalReadCategory,
+		})
+	if err != nil {
+		return nil, err
+	}
+	defer it.Close()
+
+	minSplitKey, err := mvccMinSplitKey(it, key.AsRawKey())
+	if err != nil {
+		return nil, err
+	}
+	if minSplitKey == nil {
+		// No keys in the range.
+		return nil, nil
+	}
+
+	// This check catches the case where EnsureSafeSplitKey rewound the
+	// approximate key into the first row (or to/before the range start key).
+	// This happens when the range contains a single large row with multiple
+	// column families. Since minSplitKey is always strictly greater than the
+	// range start key (it's either firstKey.Next() or
+	// EnsureSafeSplitKey(firstKey).PrefixEnd()), this check transitively
+	// guarantees that the returned split key is greater than the range start
+	// key.
+	if splitKey.Compare(minSplitKey) < 0 {
+		return nil, nil
+	}
+
+	return splitKey, nil
+}
+
+// mvccFindSplitKeyIterative finds a split key by iterating over every MVCC key
+// in the range. This is the original O(n) approach used as a fallback when the
+// fast path is not available or cannot produce a valid result.
+func mvccFindSplitKeyIterative(
+	ctx context.Context, reader Reader, key, endKey roachpb.RKey, targetSize int64,
+) (roachpb.Key, error) {
 	it, err := reader.NewMVCCIterator(
 		ctx, MVCCKeyAndIntentsIterKind, IterOptions{
 			UpperBound:   endKey.AsRawKey(),

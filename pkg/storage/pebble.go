@@ -2471,6 +2471,26 @@ func (p *Pebble) ApproximateDiskBytes(
 	return bytes, remoteBytes, externalBytes, nil
 }
 
+// ApproximateSplitKey implements the Engine interface.
+func (p *Pebble) ApproximateSplitKey(from, to roachpb.Key) (roachpb.Key, bool, error) {
+	fromEncoded := EngineKey{Key: from}.Encode()
+	toEncoded := EngineKey{Key: to}.Encode()
+	splitKeyRaw, ok, err := p.db.ApproximateSplitKey(fromEncoded, toEncoded)
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	splitKey, decodeOK := GetKeyPartFromEngineKey(splitKeyRaw)
+	if !decodeOK {
+		log.Dev.Warningf(context.Background(),
+			"ApproximateSplitKey: failed to decode engine key %x", splitKeyRaw)
+		return nil, false, nil
+	}
+	return append(roachpb.Key{}, splitKey...), true, nil
+}
+
 // Compact implements the Engine interface.
 func (p *Pebble) Compact(ctx context.Context) error {
 	return p.db.Compact(ctx, nil /* start */, EncodeMVCCKey(MVCCKeyMax), true /* parallel */)

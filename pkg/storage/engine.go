@@ -1055,6 +1055,13 @@ type Engine interface {
 	// counts for the given key span, along with how many of those bytes are on
 	// remote, as well as specifically external remote, storage.
 	ApproximateDiskBytes(from, to roachpb.Key) (total, remote, external uint64, _ error)
+	// ApproximateSplitKey returns a key that approximately bisects the
+	// estimated disk usage of the key range [from, to). The returned key
+	// can be used to split the range into two subranges of roughly equal
+	// size. It uses only SST metadata and index blocks, avoiding data block
+	// I/O. If the range contains too little data to meaningfully split, ok
+	// is false and splitKey is nil.
+	ApproximateSplitKey(from, to roachpb.Key) (splitKey roachpb.Key, ok bool, _ error)
 	// IngestLocalFilesToWriter converts local files with the given paths to
 	// equivalent writes into the Writer, after also clearing the specified spans.
 	// The caller is then responsible for committing the batch behind the Writer.

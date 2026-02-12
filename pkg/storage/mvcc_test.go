@@ -4440,6 +4440,32 @@ func TestFindValidSplitKeys(t *testing.T) {
 			expSplit:   testTablePrefix(userID, "a", "b"),
 			expError:   false,
 		},
+		// A single key (family 0 of one row) cannot be split. After
+		// EnsureSafeSplitKey, the key equals the range start key.
+		{
+			keys: []roachpb.Key{
+				testAddColFam(testTablePrefix(userID, "a"), 0),
+			},
+			rangeStart: testTablePrefix(userID, "a"),
+			expSplit:   nil,
+			expError:   false,
+		},
+		// A single row with many column families cannot be split. An
+		// approximate split key would land mid-row; EnsureSafeSplitKey
+		// rewinds it to the row prefix, which equals the range start key.
+		{
+			keys: []roachpb.Key{
+				testAddColFam(testTablePrefix(userID, "a"), 0),
+				testAddColFam(testTablePrefix(userID, "a"), 1),
+				testAddColFam(testTablePrefix(userID, "a"), 2),
+				testAddColFam(testTablePrefix(userID, "a"), 3),
+				testAddColFam(testTablePrefix(userID, "a"), 4),
+				testAddColFam(testTablePrefix(userID, "a"), 5),
+			},
+			rangeStart: testTablePrefix(userID, "a"),
+			expSplit:   nil,
+			expError:   false,
+		},
 	}
 
 	testutils.RunTrueAndFalse(t, "tenant", func(t *testing.T, tenant bool) {
@@ -4489,6 +4515,23 @@ func TestFindValidSplitKeys(t *testing.T) {
 				}
 			})
 		}
+	})
+
+	// An empty range cannot be split.
+	t.Run("empty_range", func(t *testing.T) {
+		ctx := context.Background()
+		engine := NewDefaultInMemForTesting()
+		defer engine.Close()
+
+		startKey := keys.SystemSQLCodec.TablePrefix(userID)
+		endKey := startKey.PrefixEnd()
+		startAddr, err := keys.Addr(startKey)
+		require.NoError(t, err)
+		endAddr, err := keys.Addr(endKey)
+		require.NoError(t, err)
+		splitKey, err := MVCCFindSplitKey(ctx, engine, startAddr, endAddr, 1024)
+		require.NoError(t, err)
+		require.Nil(t, splitKey)
 	})
 }
 

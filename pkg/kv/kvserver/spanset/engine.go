@@ -122,6 +122,14 @@ func (s *spanSetEngine) ApproximateDiskBytes(
 	return s.e.ApproximateDiskBytes(from, to)
 }
 
+// ApproximateSplitKey implements the storage.Engine interface.
+func (s *spanSetEngine) ApproximateSplitKey(from, to roachpb.Key) (roachpb.Key, bool, error) {
+	if err := s.spans.CheckAllowed(SpanReadOnly, TrickySpan{Key: from, EndKey: to}); err != nil {
+		return nil, false, err
+	}
+	return s.e.ApproximateSplitKey(from, to)
+}
+
 // NewSnapshot implements the storage.EngineWithoutRW interface.
 func (s *spanSetEngine) NewSnapshot(keyRanges ...roachpb.Span) storage.Reader {
 	for _, span := range keyRanges {
