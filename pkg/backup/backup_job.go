@@ -642,6 +642,7 @@ func (b *backupResumer) Resume(ctx context.Context, execCtx interface{}) error {
 	// The span is finished by the registry executing the job.
 	p := execCtx.(sql.JobExecContext)
 	initialDetails := b.job.Details().(jobspb.BackupDetails)
+
 	if err := maybeRelocateJobExecution(
 		ctx, b.job.ID(), p, initialDetails.ExecutionLocality, "BACKUP",
 	); err != nil {
@@ -662,6 +663,18 @@ func (b *backupResumer) Resume(ctx context.Context, execCtx interface{}) error {
 	if initialDetails.Compact {
 		return b.ResumeCompaction(ctx, initialDetails, p, &kmsEnv)
 	}
+
+	// If this job was created as a sibling of a regular BACKUP via the
+	// `WITH REVISION STREAM` create-or-noop dance (see
+	// maybeCreateRevlogSiblingJob), dispatch to the revlog execution
+	// path. The revlog (continuous backup) writer is not yet
+	// implemented; for now we fail the job with a clean unimplemented
+	// error so the resumer doesn't crash.
+	if initialDetails.RevLogJob {
+		log.Dev.Infof(ctx, "TODO: run revlog (job %d)", b.job.ID())
+		return errors.New("revlog: not yet implemented")
+	}
+
 	// Resolve the backup destination. We can skip this step if we
 	// have already resolved and persisted the destination either
 	// during a previous resumption of this job.
@@ -771,6 +784,21 @@ func (b *backupResumer) Resume(ctx context.Context, execCtx interface{}) error {
 		return errors.Wrapf(err, "make storage")
 	}
 	defer defaultStore.Close()
+
+	// If this BACKUP was invoked with `WITH REVISION STREAM`, perform the
+	// create-or-noop dance for a sibling revlog (continuous backup)
+	// job. This runs in addition to the normal BACKUP work below — the
+	// sibling job runs the revlog writer, this job remains a regular
+	// BACKUP. See the "Job creation" subsection of
+	// docs/RFCS/20260420_continuous_backup.md.
+	if details.CreateRevlogJob {
+		if err := maybeCreateRevlogSiblingJob(
+			ctx, defaultStore, details, b.job.Payload().Description,
+			p.User(), p.ExecCfg().JobRegistry, p.ExecCfg().InternalDB,
+		); err != nil {
+			return errors.Wrap(err, "establishing revlog sibling job")
+		}
+	}
 
 	// EncryptionInfo is non-nil only when new encryption information has been
 	// generated during BACKUP planning.

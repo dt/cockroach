@@ -3573,6 +3573,7 @@ opt_clear_data:
 //
 // Options:
 //    revision_history: enable revision history
+//    revision stream: establish a continuous backup (revlog) job for the destination
 //    encryption_passphrase="secret": encrypt backups
 //    kms="[kms_provider]://[kms_host]/[master_key_identifier]?[parameters]" : encrypt backups using KMS
 //    detached: execute backup job asynchronously, without waiting for its completion
@@ -3710,6 +3711,10 @@ backup_options:
 | STRICT STORAGE LOCALITY
   {
     $$.val = &tree.BackupOptions{Strict: true}
+  }
+| REVISION STREAM
+  {
+    $$.val = &tree.BackupOptions{RevisionStream: true}
   }
 
 include_all_clusters:

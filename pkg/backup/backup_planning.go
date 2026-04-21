@@ -75,6 +75,7 @@ func resolveOptionsForBackupJobDescription(
 		ExecutionLocality:               opts.ExecutionLocality,
 		UpdatesClusterMonitoringMetrics: opts.UpdatesClusterMonitoringMetrics,
 		Strict:                          opts.Strict,
+		RevisionStream:                  opts.RevisionStream,
 	}
 
 	if opts.EncryptionPassphrase != nil {
@@ -588,6 +589,7 @@ func backupPlanHook(
 			ExecutionLocality:               executionLocality,
 			UpdatesClusterMonitoringMetrics: updatesClusterMonitoringMetrics,
 			StrictLocalityFiltering:         backupStmt.Options.Strict,
+			CreateRevlogJob:                 backupStmt.Options.RevisionStream,
 		}
 		if backupStmt.CreatedByInfo != nil {
 			initialDetails.ScheduleID = backupStmt.CreatedByInfo.ScheduleID()
