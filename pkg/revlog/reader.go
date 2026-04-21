@@ -95,10 +95,23 @@ func (lr *LogReader) Ticks(
 		// assumedMaxTickWidth so the LIST captures the "first
 		// tick whose end exceeds end" — needed for the coverage
 		// interval that contains end itself.
+		//
+		// Round the prefix down to the last "/" so it sits on a
+		// directory boundary. Without this, ExternalStorage
+		// implementations that strip the LIST prefix from each
+		// returned name (notably nodelocal) hand back partial
+		// filenames like "6-04-21/14-34.40.pb" when the prefix
+		// ends mid-component (e.g. "log/resolved/202") — which
+		// our parser can't reconstruct into a tick-end. The cost
+		// is a wider LIST inside the last directory; the upper
+		// bound is still bounded by assumedMaxTickWidth.
 		listPrefix := commonStringPrefix(
 			MarkerPath(start.Next()),
 			MarkerPath(end.AddDuration(assumedMaxTickWidth)),
 		)
+		if i := strings.LastIndexByte(listPrefix, '/'); i >= 0 {
+			listPrefix = listPrefix[:i+1]
+		}
 
 		var names []string
 		err := lr.es.List(ctx, listPrefix, cloud.ListOptions{}, func(name string) error {
@@ -114,13 +127,27 @@ func (lr *LogReader) Ticks(
 		}
 		slices.Sort(names) // lex == chronological
 
+		// listPrefixRel is the part of listPrefix beyond
+		// ResolvedRoot — what we have to prepend to a name that's
+		// relative to the LIST prefix to recover its full
+		// ResolvedRoot-relative path.
+		listPrefixRel := strings.TrimPrefix(listPrefix, ResolvedRoot)
+
 		for _, name := range names {
-			// Names are returned relative to the storage root,
-			// per the ExternalStorage.List contract. Some
-			// backends (notably nodelocal in test mode) prepend
-			// a leading slash; tolerate both.
+			// Different backends return List entries with
+			// different conventions: some yield the full path
+			// relative to the storage root (nodelocal in test
+			// mode, with a stray leading slash), some yield the
+			// path with the LIST prefix already stripped
+			// (nodelocal in production). Normalize: strip a
+			// leading slash, strip listPrefix if it's there,
+			// then re-prepend the part of listPrefix beyond
+			// ResolvedRoot to recover the same canonical
+			// ResolvedRoot-relative path.
 			rel := strings.TrimPrefix(name, "/")
 			rel = strings.TrimPrefix(rel, ResolvedRoot)
+			rel = strings.TrimPrefix(rel, listPrefixRel)
+			rel = listPrefixRel + rel
 			fragment := strings.TrimSuffix(rel, markerExt)
 			if fragment == rel {
 				yield(Tick{}, errors.Errorf(

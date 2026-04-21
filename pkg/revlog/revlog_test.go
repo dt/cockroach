@@ -60,7 +60,7 @@ func writeTick(
 	for _, ev := range events {
 		require.NoError(t, w.Add(ev.Key, ev.Timestamp, ev.Value.RawBytes, ev.PrevValue.RawBytes))
 	}
-	f, err := w.Close()
+	f, _, err := w.Close()
 	require.NoError(t, err)
 	return f
 }
@@ -239,7 +239,7 @@ func TestExplicitTickStart(t *testing.T) {
 	w, err := revlog.NewTickWriter(ctx, es, te, 1, 0)
 	require.NoError(t, err)
 	require.NoError(t, w.Add(key("k"), te, []byte("v"), nil))
-	f, err := w.Close()
+	f, _, err := w.Close()
 	require.NoError(t, err)
 	require.NoError(t, revlog.WriteTickManifest(ctx, es, revlogpb.Manifest{
 		TickEnd:   te,

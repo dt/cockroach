@@ -747,17 +747,21 @@ this one covers how the resumer uses it.
   self-managed PTS at `frontier - 10min` is supposed to
   ensure, but a long pause beyond that 10-minute slack
   risks GC removing data the resume would need).
-- **No conflicting writes on resume.** Tick close markers
-  and coverage manifest objects are write-once. If a resume
-  attempts to write the same tick close marker as an
-  in-flight or already-committed prior incarnation, the
-  PUT must fail (use conditional `PUT If-None-Match: *`
-  semantics where the object store supports it; otherwise
-  read-then-write with check). A successful overwrite
-  indicates a race — i.e. a bug — and should not be silently
-  accepted. Data files don't have this problem because
-  their IDs are random; collisions are practically
-  impossible.
+- **Resume avoids conflicting writes by construction, not by
+  PUT semantics.** Conditional PUT (`If-None-Match: *`) is
+  not portable across the cloud providers we target, so we
+  don't rely on it. Instead: tick close markers are only
+  written once the aggregate frontier crosses the tick end,
+  the persisted checkpoint records which ticks have already
+  been closed, and a resumed coordinator starts from the
+  persisted frontier — so it never tries to re-close a tick
+  whose marker is already on disk. Data files use random IDs
+  so independent collisions are practically impossible. A
+  duplicate write that does happen anyway (true coordinator
+  race / bug) silently overwrites with byte-identical content
+  in the common case; in the pathological case (different
+  content) it's a bug we'd catch via downstream failures, not
+  via the storage layer.
 
 ##### Telemetry / metrics
 

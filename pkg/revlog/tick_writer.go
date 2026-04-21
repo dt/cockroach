@@ -29,7 +29,8 @@ var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 // and accepts entries via Add in strictly ascending
 // (user_key, mvcc_ts) order. Close finalizes the SSTable and returns
 // the revlogpb.File descriptor that the caller will eventually list
-// in the tick's manifest.
+// in the tick's manifest, plus a revlogpb.Stats describing the file
+// (key_count, logical bytes, on-disk SST size).
 //
 // TickWriter is single-use: a Close-d writer cannot be reused.
 type TickWriter struct {
@@ -37,7 +38,11 @@ type TickWriter struct {
 	fileID     int64
 	flushOrder int32
 
-	sst    *sstable.Writer
+	sst *sstable.Writer
+
+	// stats accumulates as Add is called. sst_bytes is filled in by
+	// Close from the underlying Pebble writer's metadata.
+	stats  revlogpb.Stats
 	closed bool
 }
 
@@ -84,21 +89,31 @@ func (w *TickWriter) Add(
 	if err != nil {
 		return errors.Wrap(err, "marshaling value frame")
 	}
-	return w.sst.Set(EncodeKey(userKey, ts), val)
+	if err := w.sst.Set(EncodeKey(userKey, ts), val); err != nil {
+		return err
+	}
+	w.stats.KeyCount++
+	w.stats.LogicalBytes += int64(len(userKey) + len(value) + len(prevValue))
+	return nil
 }
 
 // Close finalizes the SSTable, flushes it to external storage, and
-// returns a revlogpb.File descriptor suitable for inclusion in this
-// tick's manifest.
-func (w *TickWriter) Close() (revlogpb.File, error) {
+// returns the revlogpb.File descriptor for the tick's manifest plus
+// a revlogpb.Stats describing what was written. Stats.SSTBytes is
+// populated from the underlying Pebble writer's metadata; if that
+// query fails the rest of the stats are returned with SSTBytes=0.
+func (w *TickWriter) Close() (revlogpb.File, revlogpb.Stats, error) {
 	if w.closed {
-		return revlogpb.File{}, errors.AssertionFailedf("revlog: TickWriter already closed")
+		return revlogpb.File{}, revlogpb.Stats{}, errors.AssertionFailedf("revlog: TickWriter already closed")
 	}
 	w.closed = true
 	if err := w.sst.Close(); err != nil {
-		return revlogpb.File{}, errors.Wrap(err, "closing sstable")
+		return revlogpb.File{}, revlogpb.Stats{}, errors.Wrap(err, "closing sstable")
 	}
-	return revlogpb.File{FileID: w.fileID, FlushOrder: w.flushOrder}, nil
+	if md, err := w.sst.Metadata(); err == nil {
+		w.stats.SstBytes = int64(md.Size)
+	}
+	return revlogpb.File{FileID: w.fileID, FlushOrder: w.flushOrder}, w.stats, nil
 }
 
 // WriteTickManifest writes (and seals) the close marker for one tick.

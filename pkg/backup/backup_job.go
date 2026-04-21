@@ -667,12 +667,10 @@ func (b *backupResumer) Resume(ctx context.Context, execCtx interface{}) error {
 	// If this job was created as a sibling of a regular BACKUP via the
 	// `WITH REVISION STREAM` create-or-noop dance (see
 	// maybeCreateRevlogSiblingJob), dispatch to the revlog execution
-	// path. The revlog (continuous backup) writer is not yet
-	// implemented; for now we fail the job with a clean unimplemented
-	// error so the resumer doesn't crash.
+	// path. The sibling inherits the parent's URI / CollectionURI /
+	// EndTime, which are what the revlog writer needs.
 	if initialDetails.RevLogJob {
-		log.Dev.Infof(ctx, "TODO: run revlog (job %d)", b.job.ID())
-		return errors.New("revlog: not yet implemented")
+		return runRevlogJob(ctx, p, b.job.ID(), initialDetails)
 	}
 
 	// Resolve the backup destination. We can skip this step if we
@@ -791,11 +789,26 @@ func (b *backupResumer) Resume(ctx context.Context, execCtx interface{}) error {
 	// sibling job runs the revlog writer, this job remains a regular
 	// BACKUP. See the "Job creation" subsection of
 	// docs/RFCS/20260420_continuous_backup.md.
+	//
+	// The marker file lives at the *collection* root (alongside log/),
+	// not under the per-backup directory, so we open a collection-
+	// rooted store for the dance rather than reusing defaultStore
+	// (which is rooted at details.URI, the timestamped backup path).
 	if details.CreateRevlogJob {
-		if err := maybeCreateRevlogSiblingJob(
-			ctx, defaultStore, details, b.job.Payload().Description,
+		collectionConf, err := cloud.ExternalStorageConfFromURI(details.CollectionURI, p.User())
+		if err != nil {
+			return errors.Wrap(err, "configuring collection storage for revlog marker")
+		}
+		collectionStore, err := p.ExecCfg().DistSQLSrv.ExternalStorage(ctx, collectionConf)
+		if err != nil {
+			return errors.Wrap(err, "opening collection storage for revlog marker")
+		}
+		err = maybeCreateRevlogSiblingJob(
+			ctx, collectionStore, details, b.job.Payload().Description,
 			p.User(), p.ExecCfg().JobRegistry, p.ExecCfg().InternalDB,
-		); err != nil {
+		)
+		_ = collectionStore.Close()
+		if err != nil {
 			return errors.Wrap(err, "establishing revlog sibling job")
 		}
 	}

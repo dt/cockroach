@@ -43,8 +43,38 @@ message Manifest {
   // (see format §7).
   repeated File files = 3 [(gogoproto.nullable) = false];
 
+  // stats is the rollup across every file contributed to the tick:
+  // key_count, logical_bytes, sst_bytes (sst_bytes=0 if any
+  // contributor reported it as unknown). Useful for monitoring,
+  // debugging, and back-of-envelope cost accounting; not required
+  // for read correctness.
+  Stats stats = 4 [(gogoproto.nullable) = false];
+
   // TODO(dt): add a field here for "inline" data that was too small to
   // warrent flushing to its own data files before the tick closed.
+}
+
+// Stats summarizes the size of a unit of revlog output. Attached to
+// each FlushedFile (per-file, producer-reported) and rolled up onto
+// each Manifest (per-tick, computed by the coordinator). All fields
+// are best-effort: 0 may mean "no events" or, for sst_bytes, "size
+// not measured".
+message Stats {
+  option (gogoproto.equal) = true;
+
+  // key_count is the number of (user_key, mvcc_ts) entries written.
+  int64 key_count = 1;
+
+  // logical_bytes is the sum of len(user_key) + len(value) +
+  // len(prev_value) across all entries — the pre-encoding payload
+  // size, useful for measuring workload regardless of compression /
+  // SST overhead.
+  int64 logical_bytes = 2;
+
+  // sst_bytes is the on-disk size of the produced SSTable(s) in
+  // bytes. 0 means the size was not available at flush time
+  // (rolled-up value is 0 if any contributor's sst_bytes was 0).
+  int64 sst_bytes = 3;
 }
 
 // File identifies one data file in a tick. The full object path is
@@ -98,6 +128,13 @@ message Flush {
 message FlushedFile {
   util.hlc.Timestamp tick_end = 1 [(gogoproto.nullable) = false];
   File file = 2 [(gogoproto.nullable) = false];
+
+  // stats describes this single producer-flush — the coordinator
+  // rolls these into the per-tick Manifest.Stats. Per-file stats
+  // are deliberately not retained in the manifest itself (the
+  // rolled-up tick stats are sufficient for the use cases we have
+  // today).
+  Stats stats = 3 [(gogoproto.nullable) = false];
 }
 
 // ValueFrame is the SSTable value at (user_key, mvcc_ts). The user key
