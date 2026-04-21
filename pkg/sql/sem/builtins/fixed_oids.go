@@ -2905,6 +2905,11 @@ var builtinOidsArray = []string{
 	2950: `pg_get_statisticsobjdef(statobj_oid: oid) -> string`,
 	2951: `crdb_internal.zone_config_for_key(key: bytes) -> jsonb`,
 	2952: `crdb_internal.zone_config_span_end(key: bytes) -> bytes`,
+	2953: `crdb_internal.revlog_show_ticks(collection: string) -> tuple{timestamptz AS tick_end, bool AS closed, int AS key_count, int AS logical_bytes, int AS sst_bytes}`,
+	2954: `crdb_internal.revlog_show_ticks(collection: string, start: timestamptz, end: timestamptz) -> tuple{timestamptz AS tick_end, bool AS closed, int AS key_count, int AS logical_bytes, int AS sst_bytes}`,
+	2955: `crdb_internal.revlog_show_changes(collection: string, tick_time: timestamptz) -> tuple{string AS key, timestamptz AS mvcc_ts, string AS value, string AS prev_value}`,
+	2956: `crdb_internal.revlog_show_changes(collection: string, tick_time: timestamptz, start_key: bytes, end_key: bytes) -> tuple{string AS key, timestamptz AS mvcc_ts, string AS value, string AS prev_value}`,
+	2957: `crdb_internal.revlog_show_changes(collection: string, tick_time: timestamptz, raw_values: bool) -> tuple{string AS key, timestamptz AS mvcc_ts, bytes AS value, bytes AS prev_value}`,
 }
 
 var builtinOidsBySignature map[string]oid.Oid
