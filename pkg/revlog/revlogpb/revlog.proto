@@ -1,0 +1,122 @@
+// Copyright 2026 The Cockroach Authors.
+//
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
+
+syntax = "proto3";
+package cockroach.revlog.revlogpb;
+option go_package = "github.com/cockroachdb/cockroach/pkg/revlog/revlogpb";
+
+import "gogoproto/gogo.proto";
+import "kv/kvpb/api.proto";
+import "util/hlc/timestamp.proto";
+
+// Manifest is the close marker for a single tick. Its presence at
+// log/resolved/<YY-MMDD_HH>/<tick-end> is the authoritative statement
+// that the tick is complete: every change for the tick has been
+// durably flushed and the file list is exhaustive.
+//
+// On disk, the marker object is the marshaled Manifest followed by a
+// 4-byte CRC32C checksum of the marshaled bytes. See the format
+// document (§4) for the integrity-wrapping rationale.
+message Manifest {
+  option (gogoproto.equal) = true;
+  
+  // tick_start is the lower bound of this tick's coverage. The
+  // tick covers events with mvcc_ts in (tick_start, tick_end].
+  // Always set: making every tick self-describing means the
+  // reader doesn't have to walk previous ticks to know any one
+  // tick's lower bound, and supports a log starting mid-tick
+  // (where the first tick's tick_start is the job's launch HLC).
+  // See format §2.
+  util.hlc.Timestamp tick_start = 1 [(gogoproto.nullable) = false];
+
+  // tick_end is the right boundary of the tick (the wall-clock instant
+  // at which it sealed). Always set; combined with the trailing CRC32C
+  // this means a valid manifest is never a zero-byte file, so any
+  // shorter-than-minimum object is unambiguously corruption rather
+  // than a deliberate empty-tick marker.
+  util.hlc.Timestamp tick_end = 2 [(gogoproto.nullable) = false];
+
+  // files lists the data files contributed to this tick. Readers
+  // process files in ascending flush_order; ties are interchangeable
+  // (see format §7).
+  repeated File files = 3 [(gogoproto.nullable) = false];
+
+  // TODO(dt): add a field here for "inline" data that was too small to
+  // warrent flushing to its own data files before the tick closed.
+}
+
+// File identifies one data file in a tick. The full object path is
+// reconstructed by the reader from (tick-end, file_id) — never stored
+// here — so a manifest survives any future reorganization of the data
+// tree.
+message File {
+  option (gogoproto.equal) = true;
+
+  // file_id is an opaque identifier; the file lives at
+  // log/data/<tick-end>/<file_id>.sst.
+  int64 file_id = 1 [(gogoproto.customname) = "FileID"];
+
+  // flush_order is the per-producer-per-tick monotonic counter
+  // assigned at write time. Readers process files in ascending
+  // flush_order; files at the same flush_order cover disjoint spans
+  // by construction and may be read in any order. See format §7.
+  int32 flush_order = 2;
+}
+
+// Flush is the message a revlog producer processor sends to the
+// gateway after each flush, carried in
+// ProducerMetadata.BulkProcessorProgress.progress_details. It
+// reports both the data files just durably flushed and the
+// rangefeed checkpoints observed since the previous Flush.
+//
+// The two fields are sent together because every reported
+// checkpoint's covered events have, by construction, already been
+// flushed: the producer only emits a Flush after the data the
+// checkpoints attest to is durably persisted. The coordinator can
+// therefore safely treat each Flush as an atomic "these files exist
+// AND these spans are resolved through these times" claim.
+message Flush {
+  // files lists data files this producer has durably flushed since
+  // the previous Flush (each tagged with the tick it belongs to).
+  repeated FlushedFile files = 1 [(gogoproto.nullable) = false];
+
+  // checkpoints lists the rangefeed checkpoints this producer has
+  // observed since the previous Flush. The coordinator forwards
+  // each into its own multi-span frontier; once the aggregate
+  // frontier crosses a tick boundary, the manifest for that tick
+  // is written using the file list collected so far. Each entry
+  // is the original kvpb.RangeFeedCheckpoint as delivered to the
+  // rangefeed callback — no producer-side aggregation.
+  repeated cockroach.roachpb.RangeFeedCheckpoint checkpoints = 2 [(gogoproto.nullable) = false];
+}
+
+// FlushedFile pairs a data file with the tick it belongs to. The
+// reader reconstructs the file's full storage path from
+// (tick_end, file_id).
+message FlushedFile {
+  util.hlc.Timestamp tick_end = 1 [(gogoproto.nullable) = false];
+  File file = 2 [(gogoproto.nullable) = false];
+}
+
+// ValueFrame is the SSTable value at (user_key, mvcc_ts). The user key
+// and timestamp are encoded in the SSTable key, so they are not
+// repeated here — distinct from related shapes like
+// kvpb.RangeFeedValue (which carries the key) and
+// streampb.StreamEvent.KV (which carries KeyValue).
+message ValueFrame {
+  option (gogoproto.equal) = true;
+
+  // value is the new value at (user_key, mvcc_ts), as a raw
+  // roachpb.Value (the underlying MVCCValue bytes including header).
+  bytes value = 1;
+
+  // prev_value is the row's previous value, populated when the
+  // producer's rangefeed subscription has WithDiff set and the row
+  // existed prior. Absent (zero-length) for inserts and for
+  // non-WithDiff producers.
+  bytes prev_value = 2;
+
+  // TODO(dt): optionally represent SSTable or rangedel events.
+}
