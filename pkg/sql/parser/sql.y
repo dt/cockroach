@@ -4449,13 +4449,9 @@ copy_options:
   {
     $$.val = &tree.CopyOptions{Null: $2.expr()}
   }
-| OIDS error
-  {
-    return unimplementedWithIssueDetail(sqllex, 41608, "oids")
-  }
 | FREEZE error
   {
-    return unimplementedWithIssueDetail(sqllex, 41608, "freeze")
+    return unimplementedWithIssueDetail(sqllex, 85573, "freeze")
   }
 | HEADER
   {
@@ -4471,15 +4467,15 @@ copy_options:
   }
 | FORCE QUOTE error
   {
-    return unimplementedWithIssueDetail(sqllex, 41608, "force_quote")
+    return unimplementedWithIssueDetail(sqllex, 85575, "force_quote")
   }
 | FORCE NOT NULL error
   {
-    return unimplementedWithIssueDetail(sqllex, 41608, "force_not_null")
+    return unimplementedWithIssueDetail(sqllex, 85575, "force_not_null")
   }
 | FORCE NULL error
   {
-    return unimplementedWithIssueDetail(sqllex, 41608, "force_null")
+    return unimplementedWithIssueDetail(sqllex, 85575, "force_null")
   }
 | ENCODING SCONST
   {
@@ -4526,13 +4522,9 @@ copy_generic_options:
   {
     $$.val = &tree.CopyOptions{Null: $2.expr()}
   }
-| OIDS error
-  {
-    return unimplementedWithIssueDetail(sqllex, 41608, "oids")
-  }
 | FREEZE error
   {
-    return unimplementedWithIssueDetail(sqllex, 41608, "freeze")
+    return unimplementedWithIssueDetail(sqllex, 85573, "freeze")
   }
 | HEADER
   {
@@ -4556,15 +4548,15 @@ copy_generic_options:
   }
 | FORCE_QUOTE error
   {
-    return unimplementedWithIssueDetail(sqllex, 41608, "force_quote")
+    return unimplementedWithIssueDetail(sqllex, 85575, "force_quote")
   }
 | FORCE_NOT_NULL error
   {
-    return unimplementedWithIssueDetail(sqllex, 41608, "force_not_null")
+    return unimplementedWithIssueDetail(sqllex, 85575, "force_not_null")
   }
 | FORCE_NULL error
   {
-    return unimplementedWithIssueDetail(sqllex, 41608, "force_null")
+    return unimplementedWithIssueDetail(sqllex, 85575, "force_null")
   }
 | ENCODING SCONST
   {
