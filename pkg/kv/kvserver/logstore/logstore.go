@@ -31,6 +31,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
@@ -48,6 +49,14 @@ var DisableSyncRaftLog = settings.RegisterBoolSetting(
 	settings.WithName("kv.raft_log.synchronization.unsafe.disabled"),
 	settings.WithUnsafe,
 )
+
+// UseRaftLogSingleDelete controls whether to use Pebble's SingleDelete
+// instead of Delete when clearing individual raft log entries during
+// truncation and log suffix replacement. SingleDelete is more efficient
+// because it can be compacted away faster, but requires that each key has
+// been Set exactly once since the last delete. This is naturally the case
+// for raft log entries in the common path.
+var UseRaftLogSingleDelete = false
 
 var enableNonBlockingRaftLogSync = settings.RegisterBoolSetting(
 	settings.SystemOnly,
@@ -433,6 +442,17 @@ func logAppend(
 		var err error
 		if kvpb.RaftIndex(ent.Index) > prev.LastIndex {
 			_, err = storage.MVCCBlindPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)
+		} else if UseRaftLogSingleDelete {
+			// When using SingleDelete for truncation, we must ensure each raft
+			// log key has exactly one Set. Overwriting via MVCCPut would create a
+			// second Set. Instead, cancel the old Set with a SingleDelete, then
+			// write the new entry with a blind put. SingleDelete is safe here
+			// because every prior write followed this same pattern, so each key
+			// has exactly one Set.
+			if err := singleClearInline(ctx, rw, key, diff); err != nil {
+				return RaftState{}, err
+			}
+			_, err = storage.MVCCBlindPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)
 		} else {
 			_, err = storage.MVCCPut(ctx, rw, key, hlc.Timestamp{}, *value, opts)
 		}
@@ -447,18 +467,61 @@ func logAppend(
 		for i := newLastIndex + 1; i <= prev.LastIndex; i++ {
 			// Note that the caller is in charge of deleting any sideloaded payloads
 			// (which they must only do *after* the batch has committed).
-			_, _, err := storage.MVCCDelete(ctx, rw, keys.RaftLogKeyFromPrefix(raftLogPrefix, i),
-				hlc.Timestamp{}, opts)
+			key := keys.RaftLogKeyFromPrefix(raftLogPrefix, i)
+			var err error
+			if UseRaftLogSingleDelete {
+				// These tail entries have exactly one Set each — they were
+				// appended once and are now being cut from the log.
+				err = singleClearInline(ctx, rw, key, diff)
+			} else {
+				_, _, err = storage.MVCCDelete(ctx, rw, key,
+					hlc.Timestamp{}, opts)
+			}
 			if err != nil {
 				return RaftState{}, err
 			}
 		}
 	}
+
 	return RaftState{
 		LastIndex: newLastIndex,
 		LastTerm:  kvpb.RaftTerm(entries[len(entries)-1].Term),
 		ByteSize:  prev.ByteSize + diff.SysBytes,
 	}, nil
+}
+
+// singleClearInline issues a Pebble SingleDelete for the inline entry at key
+// and subtracts its byte/count contribution from ms. This restores the
+// MVCCStats accounting that SingleClearUnversioned skips, mirroring what
+// MVCCDelete's inline path computes via updateStatsForInline.
+// TODO(ibrahim): Replace this with a new MVCCSingleDelete function that does
+// something similar to MVCCDelete but using SingleDelete.
+func singleClearInline(
+	ctx context.Context, rw storage.ReadWriter, key roachpb.Key, ms *enginepb.MVCCStats,
+) error {
+	// TODO(ibrahim): Instead of creating an iterator for every deleted entry,
+	// create just one iterator and use it to delete the entries.
+	iter, err := rw.NewMVCCIterator(ctx, storage.MVCCKeyIterKind, storage.IterOptions{
+		Prefix: true, ReadCategory: fs.ReplicationReadCategory,
+	})
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	iter.SeekGE(storage.MakeMVCCMetadataKey(key))
+	if ok, err := iter.Valid(); err != nil {
+		return err
+	} else if ok && iter.UnsafeKey().Key.Equal(key) {
+		keyBytes := int64(iter.UnsafeKey().EncodedSize())
+		valBytes := int64(iter.ValueLen())
+		ms.SysBytes -= keyBytes + valBytes
+		ms.SysCount--
+		return rw.SingleClearUnversioned(key)
+	}
+	// We don't expect to hit this. However, we can fail-open here because
+	// the entry is already deleted, and there is nothing to do.
+	log.KvExec.Errorf(ctx, "attempted to delete a non-existent raft log entry: %s", key)
+	return nil
 }
 
 // Compact prepares a write that removes entries (prev.Index, next.Index] from
@@ -496,10 +559,14 @@ func Compact(
 		// allocating when constructing Raft log keys (16 bytes).
 		prefix := prefixBuf.RaftLogPrefix()
 		for idx := prev.Index + 1; idx <= next.Index; idx++ {
-			if err := writer.ClearUnversioned(
-				keys.RaftLogKeyFromPrefix(prefix, idx),
-				storage.ClearOptions{},
-			); err != nil {
+			key := keys.RaftLogKeyFromPrefix(prefix, idx)
+			var err error
+			if UseRaftLogSingleDelete {
+				err = writer.SingleClearUnversioned(key)
+			} else {
+				err = writer.ClearUnversioned(key, storage.ClearOptions{})
+			}
+			if err != nil {
 				return errors.Wrapf(err, "unable to clear truncated Raft entries for %+v at index %d",
 					next, idx)
 			}
