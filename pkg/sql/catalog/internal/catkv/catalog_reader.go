@@ -99,6 +99,10 @@ type CatalogReader interface {
 	GetByNames(
 		ctx context.Context, txn *kv.Txn, nameInfos []descpb.NameInfo,
 	) (nstree.Catalog, error)
+
+	// InvalidateSystemCacheEntry removes a name→ID mapping from the
+	// SystemDatabaseCache, if one is present.
+	InvalidateSystemCacheEntry(key descpb.NameInfo)
 }
 
 // NewUncachedCatalogReader is the constructor for the default
@@ -160,6 +164,9 @@ func (cr catalogReader) ScanAll(ctx context.Context, txn *kv.Txn) (nstree.Catalo
 	}
 	return mc.Catalog, nil
 }
+
+// InvalidateSystemCacheEntry is part of the CatalogReader interface.
+func (cr catalogReader) InvalidateSystemCacheEntry(descpb.NameInfo) {}
 
 // getDescriptorIDFromExclusiveKey translates an exclusive upper bound roach key
 // into an upper bound descriptor ID. It does this by turning the key into a
