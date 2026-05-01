@@ -169,6 +169,12 @@ func (rgcq *replicaGCQueue) shouldQueue(
 	if reason, err := repl.IsDestroyed(); err != nil && reason == destroyReasonMergePending {
 		return true, replicaGCPrioritySuspect
 	}
+	// Skip mid-clone ranges. As long as the bit is set, the data may be
+	// inconsistent and the orchestration (or rollback) needs the participating
+	// replicas in place; we don't GC them based on its own state.
+	if !repl.Desc().InconsistentReplicas.IsEmpty() {
+		return false, 0
+	}
 	if _, currentMember := repl.Desc().GetReplicaDescriptor(repl.store.StoreID()); !currentMember {
 		return true, replicaGCPriorityRemoved
 	}

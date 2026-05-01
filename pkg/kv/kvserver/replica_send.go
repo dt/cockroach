@@ -80,7 +80,9 @@ var optimisticEvalLimitedScans = settings.RegisterBoolSetting(
 //	  Replica.maybeCommitWaitBeforeCommitTrigger (if committing with commit-trigger)
 //	                       │
 //
-// read-write ◄─────────────────────────┴────────────────────────► read-only
+// read-write
+// ◄─────────────────────────┴────────────────────────►
+// read-only
 //
 //	│                                                               │
 //	│                                                               │
@@ -184,6 +186,23 @@ func (r *Replica) SendWithWriteBytes(
 	if filter := r.store.cfg.TestingKnobs.TestingRequestFilter; filter != nil {
 		if pErr := filter(ctx, ba); pErr != nil {
 			return nil, nil, pErr
+		}
+	}
+
+	// Reject non-admin requests whenever the InconsistentReplicas bit is set.
+	// The range is either mid-clone (cluster-fork CloneData still propagating
+	// across source-range replicas, so reads/writes would observe transiently
+	// divergent state) or post-expiry pending rollback (still inconsistent —
+	// the only valid follow-up is cleanup, never reading or writing atop it).
+	// Admin commands proceed (split, relocate, the clear of the inconsistency
+	// lease itself, etc.).
+	if !ba.IsAdmin() {
+		desc := r.Desc()
+		if !desc.InconsistentReplicas.IsEmpty() {
+			return nil, nil, kvpb.NewErrorf(
+				"range %d is mid-clone (inconsistency lease=%s); only admin commands may execute",
+				desc.RangeID, desc.InconsistentReplicas,
+			)
 		}
 	}
 

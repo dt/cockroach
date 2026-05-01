@@ -269,6 +269,22 @@ message RangeDescriptor {
   optional util.hlc.Timestamp sticky_bit = 7 [(gogoproto.nullable) = false];
 
   reserved 8;
+
+  // inconsistent_replicas, when set to a future timestamp, marks this range
+  // as intentionally tolerating cross-replica divergence until that time.
+  // Used by the cluster-fork (CREATE TENANT FROM) flow: a CloneData raft
+  // command on a source range mounts cloned data into this range's local
+  // LSM at slightly different wall-clock moments on each replica, briefly
+  // violating raft's same-applied-index-implies-byte-identity invariant.
+  // While inconsistent_replicas is in the future, the consistency checker,
+  // merge queue, and replica GC queue are hands-off, and non-admin requests
+  // are rejected.
+  //
+  // The timestamp is also a deadman: if it expires before the orchestration
+  // clears it, KV is free (and obligated) to ClearRange the keyspan on all
+  // replicas and then unset the field, returning the range to a normal,
+  // empty state.
+  optional util.hlc.Timestamp inconsistent_replicas = 9 [(gogoproto.nullable) = false];
 }
 
 // Percentiles contains a handful of hard-coded percentiles meant to summarize

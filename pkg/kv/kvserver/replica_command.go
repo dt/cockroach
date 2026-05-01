@@ -190,6 +190,10 @@ func prepareSplitDescs(
 	// of why generations are useful.
 	rightDesc.Generation = leftDesc.Generation
 	rightDesc.StickyBit = expiration
+	// InconsistentReplicas is inherited so that splitting a mid-clone range
+	// produces children that remain hands-off until the orchestration clears
+	// the bit (or KV's deadman cleanup kicks in).
+	rightDesc.InconsistentReplicas = leftDesc.InconsistentReplicas
 
 	return leftDesc, rightDesc
 }

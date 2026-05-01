@@ -142,6 +142,13 @@ func consistencyQueueShouldQueueImpl(
 	if data.interval <= 0 {
 		return false, 0
 	}
+	// Skip ranges whose replicas are intentionally allowed to diverge during a
+	// cluster-fork clone operation. As long as the bit is set, the data may be
+	// divergent — including after the lease has expired (the only valid action
+	// on an expired bit is rollback, not proceeding atop inconsistent data).
+	if !data.desc.InconsistentReplicas.IsEmpty() {
+		return false, 0
+	}
 
 	shouldQ, priority := true, float64(0)
 	if !data.disableLastProcessedCheck {

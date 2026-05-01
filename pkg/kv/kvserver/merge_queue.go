@@ -145,6 +145,13 @@ func (mq *mergeQueue) shouldQueue(
 		return false, 0
 	}
 
+	// Skip ranges that are mid-clone. As long as the bit is set, the data may
+	// be inconsistent (including after the lease has expired — the only valid
+	// action then is rollback, not a merge atop inconsistent state).
+	if !desc.InconsistentReplicas.IsEmpty() {
+		return false, 0
+	}
+
 	needsSplit, err := confReader.NeedsSplit(ctx, desc.StartKey, desc.EndKey.Next())
 	if err != nil {
 		log.KvDistribution.Warningf(
