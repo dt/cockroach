@@ -481,3 +481,108 @@ func (s *Store) SplitRange(
 	rightRepl.isInitialized.Store(true)
 	return s.markReplicaInitializedLockedReplLocked(ctx, rightRepl)
 }
+
+// batchSplitPostApply is the post-apply path for a batched multi-key split.
+func batchSplitPostApply(ctx context.Context, batchSplit *kvserverpb.BatchSplit, r *Replica) {
+	split := &batchSplit.BatchSplitTrigger
+	n := len(split.Splits)
+
+	rightRepls := make([]*Replica, n)
+	for i, entry := range split.Splits {
+		singleSplitTrigger := &roachpb.SplitTrigger{
+			LeftDesc:  split.LeftDesc,
+			RightDesc: entry.RightDesc,
+		}
+		rightRepls[i] = prepareRightReplicaForSplit(ctx, singleSplitTrigger, r)
+	}
+
+	if err := r.store.SplitRangeMany(ctx, r, rightRepls, split); err != nil {
+		log.KvExec.Fatalf(ctx, "%s: failed to update Store after batch split: %+v", r, err)
+	}
+
+	for i, rightRepl := range rightRepls {
+		if rightRepl != nil {
+			rightRepl.mu.Lock()
+			rightRepl.maybeUnquiesceLocked(true /* wakeLeader */, true /* mayCampaign */)
+			rightRepl.mu.Unlock()
+		}
+		if rightRepl != nil {
+			rightRepl.store.metrics.addMVCCStats(ctx, rightRepl.tenantMetricsRef, batchSplit.RHSDeltas[i])
+		}
+	}
+
+	now := r.store.Clock().NowAsClockTimestamp()
+	// PoC: skip splitQueue and replicateQueue per design doc.
+	_ = now
+}
+
+// SplitRangeMany atomically narrows the LHS and initializes N RHS replicas
+// in a single Store.mu critical section.
+func (s *Store) SplitRangeMany(
+	ctx context.Context, leftRepl *Replica, rightRepls []*Replica, split *roachpb.BatchSplitTrigger,
+) error {
+	oldLeftDesc := leftRepl.Desc()
+	lastRHS := split.Splits[len(split.Splits)-1].RightDesc
+	if !bytes.Equal(oldLeftDesc.EndKey, lastRHS.EndKey) ||
+		bytes.Compare(oldLeftDesc.StartKey, split.Splits[0].RightDesc.StartKey) >= 0 {
+		return errors.Errorf("left range is not splittable by right ranges: %+v", oldLeftDesc)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	leftRepl.setDescRaftMuLocked(ctx, &split.LeftDesc)
+
+	firstSplitKey := roachpb.Key(split.Splits[0].RightDesc.StartKey)
+	locksToAcquireOnRHS := leftRepl.concMgr.OnRangeSplit(firstSplitKey)
+
+	for i, rightReplOrNil := range rightRepls {
+		if rightReplOrNil == nil {
+			throwawayRightStats := load.NewReplicaLoad(s.Clock(), nil)
+			leftRepl.loadStats.Split(throwawayRightStats)
+			continue
+		}
+		rightRepl := rightReplOrNil
+		rightDesc := &split.Splits[i].RightDesc
+
+		// Partition locks: find locks belonging to this RHS.
+		var rhsLocks []roachpb.LockAcquisition
+		var remaining []roachpb.LockAcquisition
+		var nextStart roachpb.Key
+		if i < len(split.Splits)-1 {
+			nextStart = split.Splits[i+1].RightDesc.StartKey.AsRawKey()
+		}
+		for _, l := range locksToAcquireOnRHS {
+			lockKey := l.Key
+			inThisRHS := lockKey.Compare(rightDesc.StartKey.AsRawKey()) >= 0
+			if nextStart != nil {
+				inThisRHS = inThisRHS && lockKey.Compare(nextStart) < 0
+			}
+			if inThisRHS {
+				rhsLocks = append(rhsLocks, l)
+			} else {
+				remaining = append(remaining, l)
+			}
+		}
+		locksToAcquireOnRHS = remaining
+
+		for _, l := range rhsLocks {
+			rightRepl.concMgr.OnLockAcquired(ctx, &l)
+		}
+
+		leftRepl.loadStats.Split(rightRepl.loadStats)
+
+		if err := rightRepl.updateRangeInfo(ctx, rightDesc); err != nil {
+			return err
+		}
+
+		rightRepl.mu.Lock()
+		rightRepl.isInitialized.Store(true)
+		if err := s.markReplicaInitializedLockedReplLocked(ctx, rightRepl); err != nil {
+			rightRepl.mu.Unlock()
+			return err
+		}
+		rightRepl.mu.Unlock()
+	}
+	return nil
+}

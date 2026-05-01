@@ -35,6 +35,18 @@ message Split {
     (gogoproto.customname) = "RHSDelta"];
 }
 
+// BatchSplit is emitted when a Replica commits a batch split trigger. It
+// signals that the Replica has prepared the on-disk state for the left hand
+// side and all right hand sides of the split, and that they should be
+// created atomically.
+message BatchSplit {
+  option (gogoproto.equal) = true;
+
+  roachpb.BatchSplitTrigger trigger = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+  repeated storage.enginepb.MVCCStats rhs_deltas = 2 [(gogoproto.nullable) = false,
+    (gogoproto.customname) = "RHSDeltas"];
+}
+
 // Merge is emitted by a Replica which commits a transaction with
 // a MergeTrigger (i.e. absorbs its right neighbor).
 message Merge {
@@ -280,6 +292,8 @@ message ReplicatedEvalResult {
   }
 
   LinkExternalSSTable link_external_sstable = 27 [(gogoproto.customname) = "LinkExternalSSTable"];
+
+  BatchSplit batch_split = 31;
 
   // DoTimelyApplicationToAllReplicas is set to true when this proposal needs
   // to be applied on all replicas in a timely manner for various reasons

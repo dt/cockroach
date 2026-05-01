@@ -192,6 +192,57 @@ func declareKeysEndTxn(
 					Key: keys.MVCCRangeKeyGCKey(rs.GetRangeID()),
 				})
 			}
+			if bst := et.InternalCommitTrigger.BatchSplitTrigger; bst != nil {
+				// LHS read-only over the original pre-split span.
+				latchSpans.AddNonMVCC(spanset.SpanReadOnly, roachpb.Span{
+					Key:    bst.LeftDesc.StartKey.AsRawKey(),
+					EndKey: bst.LeftDesc.EndKey.AsRawKey(),
+				})
+				// Each RHS read-write.
+				lastEndKey := bst.LeftDesc.EndKey
+				for _, entry := range bst.Splits {
+					latchSpans.AddNonMVCC(spanset.SpanReadWrite, roachpb.Span{
+						Key:    entry.RightDesc.StartKey.AsRawKey(),
+						EndKey: entry.RightDesc.EndKey.AsRawKey(),
+					})
+					lastEndKey = entry.RightDesc.EndKey
+				}
+				// Range-local RW over the union span.
+				latchSpans.AddNonMVCC(spanset.SpanReadWrite, roachpb.Span{
+					Key:    keys.MakeRangeKeyPrefix(bst.LeftDesc.StartKey),
+					EndKey: keys.MakeRangeKeyPrefix(lastEndKey).PrefixEnd(),
+				})
+				// LHS RangeID-replicated RO.
+				leftRangeIDPrefix := keys.MakeRangeIDReplicatedPrefix(rs.GetRangeID())
+				latchSpans.AddNonMVCC(spanset.SpanReadOnly, roachpb.Span{
+					Key:    leftRangeIDPrefix,
+					EndKey: leftRangeIDPrefix.PrefixEnd(),
+				})
+				for _, entry := range bst.Splits {
+					rightRangeIDPrefix := keys.MakeRangeIDReplicatedPrefix(entry.RightDesc.RangeID)
+					latchSpans.AddNonMVCC(spanset.SpanReadWrite, roachpb.Span{
+						Key:    rightRangeIDPrefix,
+						EndKey: rightRangeIDPrefix.PrefixEnd(),
+					})
+					rightRangeIDUnreplicatedPrefix := keys.MakeRangeIDUnreplicatedPrefix(entry.RightDesc.RangeID)
+					latchSpans.AddNonMVCC(spanset.SpanReadWrite, roachpb.Span{
+						Key:    rightRangeIDUnreplicatedPrefix,
+						EndKey: rightRangeIDUnreplicatedPrefix.PrefixEnd(),
+					})
+				}
+				if _ = clusterversion.V26_2_NoLastReplicaGCTimestampKeyOnEval; true {
+					latchSpans.AddNonMVCC(spanset.SpanReadOnly, roachpb.Span{
+						Key: keys.RangeLastReplicaGCTimestampKey(bst.LeftDesc.RangeID),
+					})
+				}
+				latchSpans.AddNonMVCC(spanset.SpanReadOnly, roachpb.Span{
+					Key:    abortspan.MinKey(rs.GetRangeID()),
+					EndKey: abortspan.MaxKey(rs.GetRangeID()),
+				})
+				latchSpans.AddNonMVCC(spanset.SpanReadOnly, roachpb.Span{
+					Key: keys.MVCCRangeKeyGCKey(rs.GetRangeID()),
+				})
+			}
 			if mt := et.InternalCommitTrigger.MergeTrigger; mt != nil {
 				// Merges copy over the RHS abort span to the LHS, and compute
 				// replicated range ID stats over the RHS in the merge trigger.
@@ -940,6 +991,39 @@ func RunCommitTrigger(
 		*ms = newMS
 		return res, nil
 	}
+	if bst := ct.GetBatchSplitTrigger(); bst != nil {
+		sl := MakeStateLoader(rec)
+		lhsLease, err := sl.LoadLease(ctx, batch)
+		if err != nil {
+			return result.Result{}, errors.Wrap(err, "unable to load lease")
+		}
+		gcThreshold, err := sl.LoadGCThreshold(ctx, batch)
+		if err != nil {
+			return result.Result{}, errors.Wrap(err, "unable to load GCThreshold")
+		}
+		gcHint, err := sl.LoadGCHint(ctx, batch)
+		if err != nil {
+			return result.Result{}, errors.Wrap(err, "unable to load GCHint")
+		}
+		replicaVersion, err := sl.LoadVersion(ctx, batch)
+		if err != nil {
+			return result.Result{}, errors.Wrap(err, "unable to load replica version")
+		}
+		in := SplitTriggerHelperInput{
+			LeftLease:      lhsLease,
+			GCThreshold:    gcThreshold,
+			GCHint:         gcHint,
+			ReplicaVersion: replicaVersion,
+		}
+		newMS, res, err := batchSplitTrigger(
+			ctx, rec, batch, *ms, bst, in, txn.WriteTimestamp,
+		)
+		if err != nil {
+			return result.Result{}, err
+		}
+		*ms = newMS
+		return res, nil
+	}
 	if mt := ct.GetMergeTrigger(); mt != nil {
 		res, err := mergeTrigger(ctx, rec, batch, ms, mt, txn.WriteTimestamp)
 		if err != nil {
@@ -1578,6 +1662,135 @@ func splitTriggerHelper(
 	}
 	deltaPostSplitLeft := h.DeltaPostSplitLeft()
 	return deltaPostSplitLeft, pd, nil
+}
+
+// batchSplitTrigger handles the eval-time work for a batched multi-key split.
+// For the PoC, the LHS is assumed empty, so stats are trivially zero-valued
+// with ContainsEstimates set on every RHS.
+func batchSplitTrigger(
+	ctx context.Context,
+	rec EvalContext,
+	batch storage.Batch,
+	bothDeltaMS enginepb.MVCCStats,
+	split *roachpb.BatchSplitTrigger,
+	in SplitTriggerHelperInput,
+	ts hlc.Timestamp,
+) (enginepb.MVCCStats, result.Result, error) {
+	desc := rec.Desc()
+	lastRHS := split.Splits[len(split.Splits)-1].RightDesc
+	if !bytes.Equal(desc.StartKey, split.LeftDesc.StartKey) ||
+		!bytes.Equal(desc.EndKey, lastRHS.EndKey) {
+		return enginepb.MVCCStats{}, result.Result{}, errors.Errorf(
+			"range does not match batch splits: LHS (%s-%s), last RHS ends at %s, desc %s",
+			split.LeftDesc.StartKey, split.LeftDesc.EndKey, lastRHS.EndKey, desc)
+	}
+
+	if in.LeftLease.Empty() {
+		log.KvExec.Fatalf(ctx, "LHS of batch split has no lease")
+	}
+
+	currentStats, err := MakeStateLoader(rec).LoadMVCCStats(ctx, batch)
+	if err != nil {
+		return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err,
+			"unable to fetch original range mvcc stats for batch split")
+	}
+
+	// Copy the last replica GC timestamp.
+	replicaGCTS := hlc.Timestamp{}
+	if !rec.ClusterSettings().Version.IsActive(
+		ctx, clusterversion.V26_2_NoLastReplicaGCTimestampKeyOnEval,
+	) {
+		replicaGCTS, err = rec.GetLastReplicaGCTimestamp(ctx)
+		if err != nil {
+			return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err,
+				"unable to fetch last replica GC timestamp")
+		}
+	}
+
+	lastTS := hlc.Timestamp{}
+	if _, err := storage.MVCCGetProto(ctx, batch,
+		keys.QueueLastProcessedKey(split.LeftDesc.StartKey, "consistencyChecker"),
+		hlc.Timestamp{}, &lastTS, storage.MVCCGetOptions{}); err != nil {
+		return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err,
+			"unable to fetch the last consistency checker run for LHS")
+	}
+
+	rhsDeltas := make([]enginepb.MVCCStats, len(split.Splits))
+
+	for i, entry := range split.Splits {
+		rightDesc := entry.RightDesc
+
+		if !rec.ClusterSettings().Version.IsActive(
+			ctx, clusterversion.V26_2_NoLastReplicaGCTimestampKeyOnEval,
+		) {
+			if err := storage.MVCCBlindPutProto(
+				ctx, spanset.DisableForbiddenSpanAssertions(batch),
+				keys.RangeLastReplicaGCTimestampKey(rightDesc.RangeID), hlc.Timestamp{},
+				&replicaGCTS, storage.MVCCWriteOptions{Category: fs.BatchEvalReadCategory},
+			); err != nil {
+				return enginepb.MVCCStats{}, result.Result{}, errors.Wrapf(err,
+					"unable to copy last replica GC timestamp for RHS %d", i)
+			}
+		}
+
+		if err := storage.MVCCPutProto(ctx, batch,
+			keys.QueueLastProcessedKey(rightDesc.StartKey, "consistencyChecker"),
+			hlc.Timestamp{}, &lastTS,
+			storage.MVCCWriteOptions{Category: fs.BatchEvalReadCategory}); err != nil {
+			return enginepb.MVCCStats{}, result.Result{}, errors.Wrapf(err,
+				"unable to copy last consistency checker run to RHS %d", i)
+		}
+
+		if err := rec.AbortSpan().CopyTo(
+			ctx, batch, batch, &rhsDeltas[i], ts, rightDesc.RangeID,
+			gc.TxnCleanupThreshold.Get(&rec.ClusterSettings().SV),
+		); err != nil {
+			return enginepb.MVCCStats{}, result.Result{}, errors.Wrapf(err,
+				"unable to copy abort span to RHS %d", i)
+		}
+
+		rightLease := in.LeftLease
+		var ok bool
+		rightLease.Replica, ok = rightDesc.GetReplicaDescriptor(in.LeftLease.Replica.StoreID)
+		if !ok {
+			return enginepb.MVCCStats{}, result.Result{}, errors.Errorf(
+				"pre-split lease holder %+v not found in post-split descriptor %+v",
+				in.LeftLease.Replica, rightDesc,
+			)
+		}
+		if rightLease.Type() == roachpb.LeaseLeader {
+			exp := rec.Clock().Now().Add(int64(rec.GetRangeLeaseDuration()), 0)
+			rightLease.Expiration = &exp
+			rightLease.Term = 0
+			rightLease.MinExpiration = hlc.Timestamp{}
+		}
+
+		// PoC: empty range, all stats are estimates.
+		rhsStats := enginepb.MVCCStats{ContainsEstimates: 1}
+		rhsStats, err = kvstorage.WriteInitialReplicaState(
+			ctx, batch, rhsStats, rightDesc, rightLease,
+			*in.GCThreshold, *in.GCHint, in.ReplicaVersion,
+		)
+		if err != nil {
+			return enginepb.MVCCStats{}, result.Result{}, errors.Wrapf(err,
+				"unable to write initial Replica state for RHS %d", i)
+		}
+		rhsDeltas[i] = rhsStats
+	}
+
+	var pd result.Result
+	pd.Replicated.BatchSplit = &kvserverpb.BatchSplit{
+		BatchSplitTrigger: *split,
+		RHSDeltas:         rhsDeltas,
+	}
+	pd.Replicated.DoTimelyApplicationToAllReplicas = true
+
+	// The LHS delta: all changes in the batch are on the LHS (since the range
+	// was empty, we don't need to move any data).
+	lhsDelta := bothDeltaMS
+	// Account for the updated range stats (LHS now has estimate flag).
+	lhsDelta.ContainsEstimates += currentStats.ContainsEstimates
+	return lhsDelta, pd, nil
 }
 
 // mergeTrigger is called on a successful commit of an AdminMerge transaction.

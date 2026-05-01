@@ -111,6 +111,15 @@ func (r *Replica) AdminSplit(
 		return kvpb.AdminSplitResponse{}, kvpb.NewErrorf("cannot split range with no key provided")
 	}
 
+	if len(args.AdditionalSplitKeys) > 0 {
+		err := r.executeAdminCommandWithDescriptor(ctx, func(desc *roachpb.RangeDescriptor) error {
+			var err error
+			reply, err = r.adminBatchSplit(ctx, args, desc, reason)
+			return err
+		})
+		return reply, err
+	}
+
 	err := r.executeAdminCommandWithDescriptor(ctx, func(desc *roachpb.RangeDescriptor) error {
 		var err error
 		reply, err = r.adminSplitWithDescriptor(ctx, args, desc, true /* delayable */, reason, false /* findFirstSafeKey */)
@@ -570,6 +579,199 @@ func (r *Replica) adminSplitWithDescriptor(
 		return reply, errors.Wrapf(err, "split at key %s failed", splitKey)
 	}
 	return reply, nil
+}
+
+// adminBatchSplit splits a range at multiple keys in a single raft proposal.
+// All keys (primary + additional) must lie within the current range, and
+// the range must be empty (PoC precondition).
+func (r *Replica) adminBatchSplit(
+	ctx context.Context,
+	args kvpb.AdminSplitRequest,
+	desc *roachpb.RangeDescriptor,
+	reason redact.RedactableString,
+) (kvpb.AdminSplitResponse, error) {
+	var reply kvpb.AdminSplitResponse
+
+	desc, err := r.maybeLeaveAtomicChangeReplicas(ctx, desc)
+	if err != nil {
+		return reply, err
+	}
+
+	allKeys := make([]roachpb.Key, 0, 1+len(args.AdditionalSplitKeys))
+	allKeys = append(allKeys, args.SplitKey)
+	allKeys = append(allKeys, args.AdditionalSplitKeys...)
+
+	// Validate and convert all keys.
+	splitKeys := make([]roachpb.RKey, 0, len(allKeys))
+	for _, k := range allKeys {
+		if !kvserverbase.ContainsKey(desc, k) {
+			ri := r.GetRangeInfo(ctx)
+			return reply, kvpb.NewRangeKeyMismatchErrorWithCTPolicy(
+				ctx, k, k, desc, &ri.Lease, ri.ClosedTimestampPolicy,
+			)
+		}
+		rk, err := keys.Addr(k)
+		if err != nil {
+			return reply, err
+		}
+		if !rk.Equal(k) {
+			return reply, errors.Errorf("cannot split range at range-local key %s", rk)
+		}
+		if !storage.IsValidSplitKey(k) {
+			return reply, errors.Errorf("cannot split range at key %s", rk)
+		}
+		if _, _, err := keys.DecodeTenantPrefix(rk.AsRawKey()); err != nil {
+			return reply, errors.Wrapf(err, "checking for valid tenantID")
+		}
+		splitKeys = append(splitKeys, rk)
+	}
+
+	// Filter out keys equal to desc.StartKey.
+	filtered := splitKeys[:0]
+	for _, rk := range splitKeys {
+		if !rk.Equal(desc.StartKey) {
+			filtered = append(filtered, rk)
+		}
+	}
+	splitKeys = filtered
+	if len(splitKeys) == 0 {
+		return reply, nil
+	}
+
+	// PoC precondition: LHS must be empty.
+	isEmpty, err := storage.MVCCIsSpanEmpty(ctx, r.store.StateEngine(), storage.MVCCIsSpanEmptyOptions{
+		StartKey: desc.StartKey.AsRawKey(),
+		EndKey:   desc.EndKey.AsRawKey(),
+	})
+	if err != nil {
+		return reply, errors.Wrap(err, "checking if range is empty")
+	}
+	if !isEmpty {
+		return reply, errors.New("non-empty range; batched split unsupported in PoC")
+	}
+
+	n := len(splitKeys)
+	rangeIDs := make([]roachpb.RangeID, n)
+	for i := range rangeIDs {
+		rangeIDs[i], err = r.store.AllocateRangeID(ctx)
+		if err != nil {
+			return reply, errors.Wrap(err, "unable to allocate range id for batch split")
+		}
+	}
+
+	// Build LHS + N RHS descriptors.
+	leftDesc := func() *roachpb.RangeDescriptor {
+		tmp := *desc
+		return &tmp
+	}()
+	leftDesc.IncrementGeneration()
+	leftDesc.EndKey = splitKeys[0]
+
+	rhsDescs := make([]roachpb.RangeDescriptor, n)
+	for i := 0; i < n; i++ {
+		var endKey roachpb.RKey
+		if i < n-1 {
+			endKey = splitKeys[i+1]
+		} else {
+			endKey = desc.EndKey
+		}
+		rhsDescs[i] = *roachpb.NewRangeDescriptor(rangeIDs[i], splitKeys[i], endKey, desc.Replicas())
+		rhsDescs[i].Generation = leftDesc.Generation
+		rhsDescs[i].StickyBit = args.ExpirationTime
+	}
+
+	log.KvDistribution.Infof(ctx, "initiating batch split of this range at %d keys [r%d..r%d] (%s)",
+		n, rangeIDs[0], rangeIDs[n-1], reason)
+
+	if err := r.store.DB().Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+		return batchSplitTxnAttempt(ctx, r.store, txn, leftDesc, rhsDescs, desc, reason)
+	}); err != nil {
+		if ok, actualDesc := maybeDescriptorChangedError(desc, err); ok {
+			err = benignerror.New(wrapDescChangedError(err, desc, actualDesc))
+		}
+		return reply, errors.Wrapf(err, "batch split at %d keys failed", n)
+	}
+	return reply, nil
+}
+
+func batchSplitTxnAttempt(
+	ctx context.Context,
+	store *Store,
+	txn *kv.Txn,
+	leftDesc *roachpb.RangeDescriptor,
+	rhsDescs []roachpb.RangeDescriptor,
+	oldDesc *roachpb.RangeDescriptor,
+	reason redact.RedactableString,
+) error {
+	txn.SetDebugName(splitTxnName)
+
+	_, dbDescValue, _, err := conditionalGetDescValueFromDB(
+		ctx, txn, oldDesc.StartKey, false /* forUpdate */, checkDescsEqual(oldDesc))
+	if err != nil {
+		return err
+	}
+
+	// Batch 1: CPut LHS descriptor to anchor the txn record.
+	{
+		b := txn.NewBatch()
+		leftDescKey := keys.RangeDescriptorKey(leftDesc.StartKey)
+		if err := updateRangeDescriptor(b, leftDescKey, dbDescValue, leftDesc); err != nil {
+			return err
+		}
+		log.Event(ctx, "updating LHS descriptor for batch split")
+		if err := txn.Run(ctx, b); err != nil {
+			return err
+		}
+	}
+
+	// Log splits into the range event log (per-RHS, async).
+	for i := range rhsDescs {
+		if err := store.logSplit(
+			ctx, txn, *leftDesc, rhsDescs[i], reason.StripMarkers(), true, /* logAsync */
+		); err != nil {
+			return err
+		}
+	}
+
+	// Batch 2: CPut N RHS descriptors + meta2 addressing + EndTxn with trigger.
+	b := txn.NewBatch()
+	for i := range rhsDescs {
+		rightDescKey := keys.RangeDescriptorKey(rhsDescs[i].StartKey)
+		if err := updateRangeDescriptor(b, rightDescKey, nil, &rhsDescs[i]); err != nil {
+			return err
+		}
+	}
+
+	// Update range addressing: LHS meta2 + each RHS meta2.
+	if err := splitRangeAddressing(b, leftDesc, &rhsDescs[0]); err != nil {
+		return err
+	}
+	for i := 1; i < len(rhsDescs); i++ {
+		if err := rangeAddressing(b, &rhsDescs[i], putMeta); err != nil {
+			return err
+		}
+	}
+
+	// Build the trigger.
+	trigger := roachpb.BatchSplitTrigger{
+		LeftDesc:    *leftDesc,
+		ManualSplit: string(reason) == manualAdminReason,
+	}
+	for i := range rhsDescs {
+		trigger.Splits = append(trigger.Splits, roachpb.BatchSplitTriggerEntry{
+			RightDesc: rhsDescs[i],
+		})
+	}
+
+	b.AddRawRequest(&kvpb.EndTxnRequest{
+		Commit: true,
+		InternalCommitTrigger: &roachpb.InternalCommitTrigger{
+			BatchSplitTrigger: &trigger,
+		},
+	})
+
+	log.Event(ctx, "commit txn with batch containing RHS descriptors and meta records")
+	return txn.Run(ctx, b)
 }
 
 // AdminUnsplit removes the sticky bit of the range specified by the

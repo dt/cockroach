@@ -1,0 +1,16 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "splits",
+    srcs = ["splits.go"],
+    importpath = "github.com/cockroachdb/cockroach/pkg/kv/kvclient/splits",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/kv",
+        "//pkg/kv/kvpb",
+        "//pkg/roachpb",
+        "//pkg/util/hlc",
+        "@com_github_cockroachdb_errors//:errors",
+        "@org_golang_x_sync//errgroup",
+    ],
+)

@@ -468,6 +468,10 @@ func (r *Replica) handleSplitResult(ctx context.Context, split *kvserverpb.Split
 	splitPostApply(ctx, split.RHSDelta, &split.SplitTrigger, r)
 }
 
+func (r *Replica) handleBatchSplitResult(ctx context.Context, batchSplit *kvserverpb.BatchSplit) {
+	batchSplitPostApply(ctx, batchSplit, r)
+}
+
 func (r *Replica) handleMergeResult(ctx context.Context, merge *kvserverpb.Merge) {
 	if err := r.store.MergeRange(
 		ctx,

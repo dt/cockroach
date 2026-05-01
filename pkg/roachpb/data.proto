@@ -138,6 +138,29 @@ message SplitTrigger {
   bool manualSplit = 8;
 }
 
+// BatchSplitTriggerEntry describes a single right-hand side produced by a
+// batched split. Each entry carries the RHS descriptor and pre-split stats
+// for the segment that will become the RHS.
+message BatchSplitTriggerEntry {
+  option (gogoproto.equal) = true;
+
+  RangeDescriptor right_desc = 1 [(gogoproto.nullable) = false];
+  storage.enginepb.MVCCStats pre_split_segment_stats = 2 [(gogoproto.nullable) = false];
+}
+
+// BatchSplitTrigger is run after a successful commit of an AdminSplit with
+// additional_split_keys. It splits one range into N+1 ranges in a single
+// raft proposal.
+message BatchSplitTrigger {
+  option (gogoproto.equal) = true;
+
+  RangeDescriptor left_desc = 1 [(gogoproto.nullable) = false];
+  repeated BatchSplitTriggerEntry splits = 2 [(gogoproto.nullable) = false];
+  storage.enginepb.MVCCStats pre_split_total_stats = 3 [(gogoproto.nullable) = false];
+  bool use_estimates_because_external_bytes_are_present = 4;
+  bool manual_split = 5;
+}
+
 // A MergeTrigger is run after a successful commit of an AdminMerge
 // command. It provides the updated left hand side of the split's
 // range descriptor (left_desc) that now encompasses what was
@@ -306,6 +329,7 @@ message InternalCommitTrigger {
   ChangeReplicasTrigger change_replicas_trigger = 3;
   ModifiedSpanTrigger modified_span_trigger = 4;
   StickyBitTrigger sticky_bit_trigger = 5;
+  BatchSplitTrigger batch_split_trigger = 6;
 }
 
 // TransactionStatus specifies possible states for a transaction.

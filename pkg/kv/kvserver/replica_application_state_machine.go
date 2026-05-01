@@ -329,6 +329,11 @@ func (sm *replicaStateMachine) handleNonTrivialReplicatedEvalResult(
 		rResult.Split = nil
 	}
 
+	if rResult.BatchSplit != nil {
+		sm.r.handleBatchSplitResult(ctx, rResult.BatchSplit)
+		rResult.BatchSplit = nil
+	}
+
 	if rResult.Merge != nil {
 		sm.r.handleMergeResult(ctx, rResult.Merge)
 		rResult.Merge = nil

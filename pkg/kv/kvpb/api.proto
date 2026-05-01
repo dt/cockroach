@@ -1096,6 +1096,13 @@ message AdminSplitRequest {
   // cause the split to be rejected. This can be used by a caller to effectively
   // send a "conditional split" request, i.e. a split if not already split.
   repeated bytes predicate_keys = 5 [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.Key"];
+
+  // AdditionalSplitKeys is an optional ordered list of additional split points
+  // within the same range. All keys (primary + additional) must lie strictly
+  // inside the current range descriptor's bounds. The server validates the
+  // entire slice up front and returns RangeKeyMismatchError on the first
+  // out-of-bounds key.
+  repeated bytes additional_split_keys = 6 [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.Key"];
 }
 
 // An AdminSplitResponse is the return value from the AdminSplit()

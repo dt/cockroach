@@ -331,6 +331,13 @@ func (p *Result) MergeAndDestroy(q Result) error {
 	}
 	q.Replicated.Split = nil
 
+	if p.Replicated.BatchSplit == nil {
+		p.Replicated.BatchSplit = q.Replicated.BatchSplit
+	} else if q.Replicated.BatchSplit != nil {
+		return errors.AssertionFailedf("conflicting BatchSplit")
+	}
+	q.Replicated.BatchSplit = nil
+
 	if p.Replicated.Merge == nil {
 		p.Replicated.Merge = q.Replicated.Merge
 	} else if q.Replicated.Merge != nil {

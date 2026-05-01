@@ -251,6 +251,7 @@ func GetDescriptorChangesFromRaftLog(
 					Desc:       &raftCmd.ReplicatedEvalResult.Split.LeftDesc,
 					OtherDesc:  &raftCmd.ReplicatedEvalResult.Split.RightDesc,
 				})
+		// TODO(batch-split-poc): handle BatchSplit in loqrecovery for production.
 		case raftCmd.ReplicatedEvalResult.Merge != nil:
 			changes = append(changes,
 				loqrecoverypb.DescriptorChangeInfo{

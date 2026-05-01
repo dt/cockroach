@@ -2932,6 +2932,8 @@ func (r *Replica) maybeAcquireSplitMergeLock(
 ) (func(), error) {
 	if split := raftCmd.ReplicatedEvalResult.Split; split != nil {
 		return r.acquireSplitLock(ctx, &split.SplitTrigger)
+	} else if batchSplit := raftCmd.ReplicatedEvalResult.BatchSplit; batchSplit != nil {
+		return r.acquireBatchSplitLock(ctx, &batchSplit.BatchSplitTrigger)
 	} else if merge := raftCmd.ReplicatedEvalResult.Merge; merge != nil {
 		return r.acquireMergeLock(ctx, &merge.MergeTrigger)
 	}
@@ -2963,6 +2965,44 @@ func (r *Replica) acquireSplitLock(
 			&split.LeftDesc, &split.RightDesc)
 	}
 	return rightRepl.raftMu.Unlock, nil
+}
+
+func (r *Replica) acquireBatchSplitLock(
+	ctx context.Context, split *roachpb.BatchSplitTrigger,
+) (func(), error) {
+	var unlockFns []func()
+	for i, entry := range split.Splits {
+		rightReplDesc, _ := entry.RightDesc.GetReplicaDescriptor(r.StoreID())
+		rightRepl, _, err := r.store.getOrCreateReplica(ctx, roachpb.FullReplicaID{
+			RangeID:   entry.RightDesc.RangeID,
+			ReplicaID: rightReplDesc.ReplicaID,
+		}, nil /* creatingReplica */)
+		if errors.HasType(err, (*kvpb.RaftGroupDeletedError)(nil)) {
+			unlockFns = append(unlockFns, func() {})
+			continue
+		}
+		if err != nil {
+			// Release already-acquired locks in reverse order.
+			for j := len(unlockFns) - 1; j >= 0; j-- {
+				unlockFns[j]()
+			}
+			return nil, err
+		}
+		if rightRepl.IsInitialized() {
+			for j := len(unlockFns) - 1; j >= 0; j-- {
+				unlockFns[j]()
+			}
+			return nil, errors.Errorf(
+				"RHS %d of batch split already initialized before split application", i,
+			)
+		}
+		unlockFns = append(unlockFns, rightRepl.raftMu.Unlock)
+	}
+	return func() {
+		for i := len(unlockFns) - 1; i >= 0; i-- {
+			unlockFns[i]()
+		}
+	}, nil
 }
 
 func (r *Replica) acquireMergeLock(

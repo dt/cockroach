@@ -249,7 +249,7 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 	// NB: none of this is necessary in standalone log application, as long
 	// as we don't concurrently apply multiple raft logs.
 	if splitMergeUnlock, err := b.r.maybeAcquireSplitMergeLock(ctx, cmd.Cmd); err != nil {
-		if cmd.Cmd.ReplicatedEvalResult.Split != nil {
+		if cmd.Cmd.ReplicatedEvalResult.Split != nil || cmd.Cmd.ReplicatedEvalResult.BatchSplit != nil {
 			err = errors.Wrap(err, "unable to acquire split lock")
 		} else {
 			err = errors.Wrap(err, "unable to acquire merge lock")
@@ -353,6 +353,25 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		// are only interested in keys that are still on the original range running.
 		reason := kvpb.RangeFeedRetryError_REASON_RANGE_SPLIT
 		if res.Split.SplitTrigger.ManualSplit {
+			reason = kvpb.RangeFeedRetryError_REASON_MANUAL_RANGE_SPLIT
+		}
+		b.r.disconnectRangefeedWithReason(reason)
+	}
+
+	if batchSplit := res.BatchSplit; batchSplit != nil {
+		for _, entry := range batchSplit.Splits {
+			splitTrigger := roachpb.SplitTrigger{
+				LeftDesc:  batchSplit.LeftDesc,
+				RightDesc: entry.RightDesc,
+			}
+			in, err := validateAndPrepareSplit(ctx, b.r, splitTrigger, cmd.Index(), cmd.Cmd.ClosedTimestamp)
+			if err != nil {
+				log.KvExec.Fatalf(ctx, "unable to validate batch split entry: %s", err)
+			}
+			splitPreApply(ctx, kvstorage.StateRW(b.batch.State()), b.RaftRW(), b.batch.WagWriter(), in)
+		}
+		reason := kvpb.RangeFeedRetryError_REASON_RANGE_SPLIT
+		if batchSplit.ManualSplit {
 			reason = kvpb.RangeFeedRetryError_REASON_MANUAL_RANGE_SPLIT
 		}
 		b.r.disconnectRangefeedWithReason(reason)
