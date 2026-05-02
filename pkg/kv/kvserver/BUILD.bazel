@@ -323,6 +323,7 @@ go_test(
         "flow_control_raft_transport_test.go",
         "gossip_test.go",
         "helpers_test.go",
+        "inconsistency_lease_test.go",
         "intent_resolver_integration_test.go",
         "kv_snapshot_strategy_test.go",
         "lease_history_test.go",

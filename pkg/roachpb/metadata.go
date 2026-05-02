@@ -168,6 +168,23 @@ func (g RangeGeneration) String() string {
 // SafeValue implements the redact.SafeValue interface.
 func (g RangeGeneration) SafeValue() {}
 
+// AbortedInconsistencyLease is the sentinel value for a
+// RangeDescriptor.InconsistentReplicas field that indicates the previous
+// lease was forcibly cleared by KV's deadman cleanup and is awaiting
+// acknowledgement from the operation that originally set it.
+//
+// The encoding (a single hlc.Timestamp with a negative WallTime) keeps the
+// descriptor field a single value: empty (clean), positive (locked until
+// that time), or this sentinel (aborted). See the field comment in
+// metadata.proto for the full state diagram.
+var AbortedInconsistencyLease = hlc.Timestamp{WallTime: -1}
+
+// IsInconsistencyLeaseAborted reports whether the supplied
+// InconsistentReplicas value represents the aborted-sentinel state.
+func IsInconsistencyLeaseAborted(t hlc.Timestamp) bool {
+	return t.WallTime < 0
+}
+
 // NewRangeDescriptor returns a RangeDescriptor populated from the input.
 func NewRangeDescriptor(rangeID RangeID, start, end RKey, replicas ReplicaSet) *RangeDescriptor {
 	repls := append([]ReplicaDescriptor(nil), replicas.Descriptors()...)

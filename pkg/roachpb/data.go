@@ -1073,6 +1073,8 @@ func (ct InternalCommitTrigger) Kind() redact.SafeString {
 		}
 	case ct.StickyBitTrigger != nil:
 		return "sticky-bit"
+	case ct.InconsistentReplicasTrigger != nil:
+		return "inconsistent-replicas"
 	default:
 		panic("unknown commit trigger kind")
 	}

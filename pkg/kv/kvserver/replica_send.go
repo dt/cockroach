@@ -11,6 +11,7 @@ import (
 	"runtime/trace"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
@@ -189,14 +190,27 @@ func (r *Replica) SendWithWriteBytes(
 		}
 	}
 
-	// Reject non-admin requests whenever the InconsistentReplicas bit is set.
-	// The range is either mid-clone (cluster-fork CloneData still propagating
-	// across source-range replicas, so reads/writes would observe transiently
-	// divergent state) or post-expiry pending rollback (still inconsistent —
-	// the only valid follow-up is cleanup, never reading or writing atop it).
-	// Admin commands proceed (split, relocate, the clear of the inconsistency
-	// lease itself, etc.).
-	if !ba.IsAdmin() {
+	// Reject non-admin requests targeting the range's user keyspace whenever
+	// the InconsistentReplicas bit is set. The range is either mid-clone
+	// (cluster-fork CloneData still propagating across source-range replicas,
+	// so reads/writes would observe transiently divergent state) or
+	// post-expiry pending rollback (still inconsistent — the only valid
+	// follow-up is cleanup, never reading or writing atop it).
+	//
+	// Exemptions:
+	//   - Admin commands themselves (split, relocate, the clear of the
+	//     inconsistency lease itself, etc.).
+	//   - Batches whose keys are all local (e.g. an internal txn's CPut on
+	//     the RangeDescriptor key, used by AdminSetReplicaInconsistency to
+	//     clear the lease): the bit only constrains user-key reads/writes,
+	//     not range-metadata bookkeeping.
+	//   - Lease-management batches (LeaseInfo, RequestLease, TransferLease):
+	//     AdminChangeReplicas / AdminRelocateRange issue these internally to
+	//     discover the leaseholder and to hand off the lease before removing
+	//     a voter. Without this exemption an orchestration that has just
+	//     locked a range can't move replicas on it, deadlocking against the
+	//     bit it set itself.
+	if !ba.IsAdmin() && !batchOnlyTouchesLocalKeys(ba) && !isLeaseManagementBatch(ba) {
 		desc := r.Desc()
 		if !desc.InconsistentReplicas.IsEmpty() {
 			return nil, nil, kvpb.NewErrorf(
@@ -1068,6 +1082,11 @@ func (r *Replica) executeAdminBatch(
 		pErr = kvpb.NewError(err)
 		resp = &reply
 
+	case *kvpb.AdminSetReplicaInconsistencyRequest:
+		var reply kvpb.AdminSetReplicaInconsistencyResponse
+		reply, pErr = r.AdminSetReplicaInconsistency(ctx, *tArgs)
+		resp = &reply
+
 	default:
 		return nil, kvpb.NewErrorf("unrecognized admin command: %T", args)
 	}
@@ -1426,4 +1445,35 @@ func (ec *endCmds) done(
 	if ec.g != nil {
 		ec.repl.concMgr.FinishReq(ctx, ec.g)
 	}
+}
+
+// isLeaseManagementBatch returns true iff ba is a single lease-management
+// request (LeaseInfo, RequestLease, TransferLease). These are exempt from
+// the InconsistentReplicas dispatch reject because they manipulate or
+// inspect the range lease itself, not user data, and admin commands like
+// AdminRelocateRange / AdminChangeReplicas issue them internally as part
+// of replica movement on a locked range.
+func isLeaseManagementBatch(ba *kvpb.BatchRequest) bool {
+	return ba.IsSingleLeaseInfoRequest() ||
+		ba.IsSingleRequestLeaseRequest() ||
+		ba.IsSingleTransferLeaseRequest()
+}
+
+// batchOnlyTouchesLocalKeys reports whether every request in ba addresses a
+// local key (LocalRangeIDPrefix or LocalRangePrefix). The
+// InconsistentReplicas-lease rejection ignores local-only batches so that
+// internal range-metadata operations (e.g. AdminSetReplicaInconsistency's own
+// CPut on the RangeDescriptor key) can run while the lease is set.
+func batchOnlyTouchesLocalKeys(ba *kvpb.BatchRequest) bool {
+	for _, ru := range ba.Requests {
+		req := ru.GetInner()
+		h := req.Header()
+		if !keys.IsLocal(h.Key) {
+			return false
+		}
+		if len(h.EndKey) > 0 && !keys.IsLocal(h.EndKey) {
+			return false
+		}
+	}
+	return true
 }

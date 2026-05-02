@@ -2368,9 +2368,19 @@ func (p *Pebble) Excise(ctx context.Context, span roachpb.Span) error {
 
 // VirtualClone implements the Engine interface.
 //
-// TODO(dt): wire to Pebble's VirtualClone API (currently in flight on the
-// cockroachdb/pebble `clone` branch). The signature here is the CRDB-side
-// shape we want regardless of how the Pebble surface lands.
+// TODO(dt): wire to p.db.VirtualClone once the Pebble clone branch
+// stabilizes. The public API has landed (signature
+// `(ctx, KeyRange, srcPrefix, dstPrefix) error`) but the supporting
+// implementation is mid-flight as of writing; vendoring the branch
+// in via --local-pebble currently produces build errors in Pebble
+// itself. The wiring on this side is one liner once Pebble compiles
+// cleanly:
+//
+//	rawSpan := pebble.KeyRange{
+//	    Start: EngineKey{Key: srcSpan.Key}.Encode(),
+//	    End:   EngineKey{Key: srcSpan.EndKey}.Encode(),
+//	}
+//	return p.db.VirtualClone(ctx, rawSpan, srcPrefix, dstPrefix)
 func (p *Pebble) VirtualClone(
 	ctx context.Context, srcSpan roachpb.Span, srcPrefix, dstPrefix []byte,
 ) error {

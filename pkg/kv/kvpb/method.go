@@ -178,6 +178,13 @@ const (
 	// (CREATE TENANT FROM) flow. See CloneDataRequest for details.
 	CloneData
 
+	// AdminSetReplicaInconsistency sets (or clears) the
+	// RangeDescriptor.InconsistentReplicas field on a range, marking it as
+	// intentionally tolerating cross-replica divergence (or restoring it to
+	// normal). Used by the cluster-fork orchestration to bracket its
+	// CloneData proposals.
+	AdminSetReplicaInconsistency
+
 	// MaxMethod is the maximum method.
 	MaxMethod Method = iota - 1
 	// NumMethods represents the total number of API methods.

@@ -997,6 +997,7 @@ distsender_rpc_adminchangereplicas_sent: distsender.rpc.adminchangereplicas.sent
 distsender_rpc_adminmerge_sent: distsender.rpc.adminmerge.sent
 distsender_rpc_adminrelocaterange_sent: distsender.rpc.adminrelocaterange.sent
 distsender_rpc_adminscatter_sent: distsender.rpc.adminscatter.sent
+distsender_rpc_adminsetreplicainconsistency_sent: distsender.rpc.adminsetreplicainconsistency.sent
 distsender_rpc_adminsplit_sent: distsender.rpc.adminsplit.sent
 distsender_rpc_admintransferlease_sent: distsender.rpc.admintransferlease.sent
 distsender_rpc_adminunsplit_sent: distsender.rpc.adminunsplit.sent
@@ -2226,6 +2227,7 @@ rpc_method_adminchangereplicas_recv: rpc.method.adminchangereplicas.recv
 rpc_method_adminmerge_recv: rpc.method.adminmerge.recv
 rpc_method_adminrelocaterange_recv: rpc.method.adminrelocaterange.recv
 rpc_method_adminscatter_recv: rpc.method.adminscatter.recv
+rpc_method_adminsetreplicainconsistency_recv: rpc.method.adminsetreplicainconsistency.recv
 rpc_method_adminsplit_recv: rpc.method.adminsplit.recv
 rpc_method_admintransferlease_recv: rpc.method.admintransferlease.recv
 rpc_method_adminunsplit_recv: rpc.method.adminunsplit.recv

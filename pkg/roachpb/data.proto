@@ -294,6 +294,22 @@ message StickyBitTrigger {
   util.hlc.Timestamp sticky_bit = 1 [(gogoproto.nullable) = false];
 }
 
+// InconsistentReplicasTrigger indicates that the InconsistentReplicas field
+// of a range descriptor should be updated to the supplied value as part of
+// committing the txn. The accompanying CPut on the descriptor must agree.
+//
+// Used by AdminSetReplicaInconsistency: the commit trigger forces every
+// replica's in-memory RangeDescriptor to pick up the new value, so the
+// non-admin-request rejection check in Replica.Send observes the new
+// state immediately on the leaseholder (and on followers as soon as the
+// command applies).
+message InconsistentReplicasTrigger {
+  // InconsistentReplicas is the new value to install on the descriptor.
+  // Empty (zero-valued) means "clear the lease"; non-zero means "lock
+  // until that time".
+  util.hlc.Timestamp inconsistent_replicas = 1 [(gogoproto.nullable) = false];
+}
+
 // InternalCommitTrigger encapsulates all of the internal-only commit triggers.
 // Only one may be set.
 message InternalCommitTrigger {
@@ -306,6 +322,7 @@ message InternalCommitTrigger {
   ChangeReplicasTrigger change_replicas_trigger = 3;
   ModifiedSpanTrigger modified_span_trigger = 4;
   StickyBitTrigger sticky_bit_trigger = 5;
+  InconsistentReplicasTrigger inconsistent_replicas_trigger = 6;
 }
 
 // TransactionStatus specifies possible states for a transaction.

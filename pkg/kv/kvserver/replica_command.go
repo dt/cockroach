@@ -662,6 +662,106 @@ func (r *Replica) adminUnsplitWithDescriptor(
 	return reply, nil
 }
 
+// AdminSetReplicaInconsistency sets, clears, or acknowledges the
+// RangeDescriptor.InconsistentReplicas field on this range. See the
+// AdminSetReplicaInconsistencyRequest proto comment for the request
+// semantics. The mutation is performed via a normal txn-CPut on the
+// descriptor; no per-replica apply trigger is needed because the field is
+// replicated state.
+func (r *Replica) AdminSetReplicaInconsistency(
+	ctx context.Context, args kvpb.AdminSetReplicaInconsistencyRequest,
+) (kvpb.AdminSetReplicaInconsistencyResponse, *kvpb.Error) {
+	var reply kvpb.AdminSetReplicaInconsistencyResponse
+	err := r.executeAdminCommandWithDescriptor(ctx, func(desc *roachpb.RangeDescriptor) error {
+		return r.adminSetReplicaInconsistencyWithDescriptor(ctx, args, desc)
+	})
+	return reply, err
+}
+
+func (r *Replica) adminSetReplicaInconsistencyWithDescriptor(
+	ctx context.Context, args kvpb.AdminSetReplicaInconsistencyRequest, desc *roachpb.RangeDescriptor,
+) error {
+	if !bytes.Equal(desc.StartKey.AsRawKey(), args.Header().Key) {
+		return errors.Errorf("key %s is not the start of a range", args.Header().Key)
+	}
+
+	current := desc.InconsistentReplicas
+	currentAborted := roachpb.IsInconsistencyLeaseAborted(current)
+
+	// Validate against current state.
+	if currentAborted && !args.AckAborted {
+		return errors.Errorf(
+			"range %d: previous inconsistency lease was aborted; retry with ack_aborted=true",
+			desc.RangeID,
+		)
+	}
+
+	// Compute the desired new value. The request's UntilTS is what we want
+	// to write directly (zero means clear). If the caller is acknowledging
+	// an abort, we overwrite the sentinel with the requested UntilTS.
+	desired := args.UntilTS
+	if desired.WallTime < 0 {
+		return errors.Errorf("UntilTS must be non-negative; got %s", desired)
+	}
+
+	// Idempotent no-op: descriptor already reflects the requested state and
+	// there's no aborted flag to clear.
+	if !currentAborted && current.Equal(desired) {
+		return nil
+	}
+
+	// TODO(dt): on UNLOCK (desired UntilTS = 0), verify that the
+	// CloneData side-effect actually landed on every replica's local
+	// store before clearing the bit. The planned production design
+	// uses per-replica missing-spans state (range-id-local, persisted,
+	// included in raft snapshots) initialized at lock time, decremented
+	// by CloneData apply, and verified via a fanout RPC at unlock. See
+	// the design brief at
+	// https://gist.github.com/dt/43c293c781ff8508fde592a432af30c2
+	// (Verifying clone coverage at unlock). For the prototype we trust
+	// the orchestration to have driven CloneData to completion; failure
+	// modes are not yet detected.
+
+	return r.store.DB().Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+		_, dbDescValue, _, err := conditionalGetDescValueFromDB(
+			ctx, txn, desc.StartKey, false /* forUpdate */, checkDescsEqual(desc))
+		if err != nil {
+			return err
+		}
+
+		newDesc := *desc
+		newDesc.InconsistentReplicas = desired
+		descKey := keys.RangeDescriptorKey(newDesc.StartKey)
+
+		b := txn.NewBatch()
+		if err := updateRangeDescriptor(b, descKey, dbDescValue, &newDesc); err != nil {
+			return err
+		}
+		// Run this batch first to ensure that the txn record is created on
+		// the right range; the commit trigger requires it.
+		if err := txn.Run(ctx, b); err != nil {
+			return err
+		}
+
+		// Commit with a trigger so every replica's in-memory descriptor picks
+		// up the new InconsistentReplicas value as soon as the EndTxn applies.
+		// Without this, the leaseholder's cached Replica.Desc() would continue
+		// to report the old value until something else (e.g. a split/merge)
+		// refreshed it, and the non-admin-request rejection in Replica.Send
+		// would race against the on-disk state.
+		b = txn.NewBatch()
+		b.AddRawRequest(&kvpb.EndTxnRequest{
+			Commit: true,
+			InternalCommitTrigger: &roachpb.InternalCommitTrigger{
+				InconsistentReplicasTrigger: &roachpb.InconsistentReplicasTrigger{
+					InconsistentReplicas: desired,
+				},
+			},
+		})
+		return txn.Run(ctx, b)
+	})
+}
+
 // executeAdminCommandWithDescriptor wraps a read-modify-write operation for RangeDescriptors in a
 // retry loop.
 func (r *Replica) executeAdminCommandWithDescriptor(

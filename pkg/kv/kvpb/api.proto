@@ -2218,6 +2218,55 @@ message CloneDataResponse {
   ResponseHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
 }
 
+// AdminSetReplicaInconsistencyRequest sets (or clears) the
+// RangeDescriptor.InconsistentReplicas field on the addressed range. A
+// non-empty ExpiresAt installs/extends the inconsistency lease, marking the
+// range as intentionally tolerating cross-replica divergence until at least
+// that time. An empty ExpiresAt clears the lease.
+//
+// While the lease is set, the consistency checker, merge queue, and replica
+// GC queue back off, and Replica.Send rejects non-admin requests. See the
+// RangeDescriptor.inconsistent_replicas field comment.
+//
+// This is an admin command: it mutates the range descriptor via a normal
+// transactional CPut (no per-replica apply trigger). It is invoked by the
+// cluster-fork (CREATE TENANT FROM) orchestration around its CloneData
+// proposals.
+message AdminSetReplicaInconsistencyRequest {
+  RequestHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+
+  // UntilTS sets the lease's locked-until time on the range descriptor.
+  // A non-zero value installs (or extends) the lease (lock); zero
+  // releases it (unlock).
+  //
+  // Unlock additionally verifies that the corresponding CloneData has
+  // applied on every replica (TODO: WaitForApplication / marker check)
+  // before clearing UntilTS, so that re-enabling the consistency checker
+  // doesn't immediately observe an unfinished clone.
+  //
+  // The request fails if the descriptor's Aborted flag is set (KV's
+  // deadman cleared a prior lease and the state has not been
+  // acknowledged) unless AckAborted is also set, in which case the
+  // Aborted flag is cleared as part of the request.
+  //
+  // Idempotency: re-issuing the same request against a descriptor that
+  // already reflects the desired UntilTS is a successful no-op.
+  util.hlc.Timestamp until_ts = 2 [(gogoproto.nullable) = false, (gogoproto.customname) = "UntilTS"];
+
+  // AckAborted, when true, clears any pre-existing Aborted flag on the
+  // descriptor as part of this request. When false, the request fails
+  // if the descriptor has Aborted=true. Used by the orchestration to
+  // discover (via the failure) that its lease was cleared by KV's
+  // deadman, and to subsequently acknowledge that state.
+  bool ack_aborted = 3;
+}
+
+// AdminSetReplicaInconsistencyResponse is the response to an
+// AdminSetReplicaInconsistency() operation.
+message AdminSetReplicaInconsistencyResponse {
+  ResponseHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+}
+
 // LinkExternalSSTableRequest contains arguments to the LinkExternalSSTable
 // method, which links an External SST file into the Pebble log-structured
 // merge-tree. The External SST must point to a backup file which contains
@@ -2614,6 +2663,7 @@ message RequestUnion {
     ExciseRequest excise = 58;
     FlushLockTableRequest flush_lock_table = 59;
     CloneDataRequest clone_data = 60;
+    AdminSetReplicaInconsistencyRequest admin_set_replica_inconsistency = 61;
   }
   reserved 8, 15, 23, 25, 26, 27, 31, 34, 49, 52;
 }
@@ -2671,6 +2721,7 @@ message ResponseUnion {
     ExciseResponse excise = 58;
     FlushLockTableResponse flush_lock_table = 59;
     CloneDataResponse clone_data = 60;
+    AdminSetReplicaInconsistencyResponse admin_set_replica_inconsistency = 61;
   }
   reserved 8, 15, 23, 25, 26, 27, 28, 31, 34, 49, 52;
 }

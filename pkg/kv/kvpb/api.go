@@ -964,6 +964,9 @@ func (*ExciseRequest) Method() Method { return Excise }
 func (*CloneDataRequest) Method() Method { return CloneData }
 
 // Method implements the Request interface.
+func (*AdminSetReplicaInconsistencyRequest) Method() Method { return AdminSetReplicaInconsistency }
+
+// Method implements the Request interface.
 func (*MigrateRequest) Method() Method { return Migrate }
 
 // Method implements the Request interface.
@@ -1229,6 +1232,12 @@ func (r *ExciseRequest) ShallowCopy() Request {
 
 // ShallowCopy implements the Request interface.
 func (r *CloneDataRequest) ShallowCopy() Request {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Request interface.
+func (r *AdminSetReplicaInconsistencyRequest) ShallowCopy() Request {
 	shallowCopy := *r
 	return &shallowCopy
 }
@@ -1527,6 +1536,12 @@ func (r *ExciseResponse) ShallowCopy() Response {
 
 // ShallowCopy implements the Response interface.
 func (r *CloneDataResponse) ShallowCopy() Response {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Response interface.
+func (r *AdminSetReplicaInconsistencyResponse) ShallowCopy() Response {
 	shallowCopy := *r
 	return &shallowCopy
 }
@@ -2103,6 +2118,10 @@ func (r *CloneDataRequest) flags() flag {
 	// MVCC writes happen there), but it does mutate the local engine and
 	// must apply on every replica via raft. Modeled on AddSSTable's flags.
 	return isWrite | isRange | isAlone | isUnsplittable | canBackpressure | bypassesReplicaCircuitBreaker
+}
+
+func (r *AdminSetReplicaInconsistencyRequest) flags() flag {
+	return isAdmin | isAlone
 }
 
 func (*MigrateRequest) flags() flag { return isWrite | isRange | isAlone }

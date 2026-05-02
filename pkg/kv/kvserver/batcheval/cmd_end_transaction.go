@@ -978,6 +978,15 @@ func RunCommitTrigger(
 		}
 		return res, nil
 	}
+	if irt := ct.GetInconsistentReplicasTrigger(); irt != nil {
+		newDesc := *rec.Desc()
+		newDesc.InconsistentReplicas = irt.InconsistentReplicas
+		var res result.Result
+		res.Replicated.State = &kvserverpb.ReplicaState{
+			Desc: &newDesc,
+		}
+		return res, nil
+	}
 
 	log.KvExec.Fatalf(ctx, "unknown commit trigger: %+v", ct)
 	return result.Result{}, nil

@@ -112,6 +112,8 @@ func (ru RequestUnion) GetInner() Request {
 		return t.FlushLockTable
 	case *RequestUnion_CloneData:
 		return t.CloneData
+	case *RequestUnion_AdminSetReplicaInconsistency:
+		return t.AdminSetReplicaInconsistency
 	default:
 		return nil
 	}
@@ -218,6 +220,8 @@ func (ru ResponseUnion) GetInner() Response {
 		return t.FlushLockTable
 	case *ResponseUnion_CloneData:
 		return t.CloneData
+	case *ResponseUnion_AdminSetReplicaInconsistency:
+		return t.AdminSetReplicaInconsistency
 	default:
 		return nil
 	}
@@ -328,6 +332,8 @@ func (ru *RequestUnion) MustSetInner(r Request) {
 		union = &RequestUnion_FlushLockTable{t}
 	case *CloneDataRequest:
 		union = &RequestUnion_CloneData{t}
+	case *AdminSetReplicaInconsistencyRequest:
+		union = &RequestUnion_AdminSetReplicaInconsistency{t}
 	default:
 		panic(fmt.Sprintf("unsupported type %T for %T", r, ru))
 	}
@@ -437,13 +443,15 @@ func (ru *ResponseUnion) MustSetInner(r Response) {
 		union = &ResponseUnion_FlushLockTable{t}
 	case *CloneDataResponse:
 		union = &ResponseUnion_CloneData{t}
+	case *AdminSetReplicaInconsistencyResponse:
+		union = &ResponseUnion_AdminSetReplicaInconsistency{t}
 	default:
 		panic(fmt.Sprintf("unsupported type %T for %T", r, ru))
 	}
 	ru.Value = union
 }
 
-type reqCounts [50]int32
+type reqCounts [51]int32
 
 // getReqCounts returns the number of times each
 // request type appears in the batch.
@@ -551,6 +559,8 @@ func (ba *BatchRequest) getReqCounts() reqCounts {
 			counts[48]++
 		case *RequestUnion_CloneData:
 			counts[49]++
+		case *RequestUnion_AdminSetReplicaInconsistency:
+			counts[50]++
 		default:
 			panic(fmt.Sprintf("unsupported request: %+v", ru))
 		}
@@ -609,6 +619,7 @@ var requestNames = []string{
 	"Excise",
 	"FlushLockTable",
 	"CloneData",
+	"AdmSetReplicaInconsistency",
 }
 
 // Summary prints a short summary of the requests in a batch.
@@ -844,6 +855,10 @@ type cloneDataResponseAlloc struct {
 	union ResponseUnion_CloneData
 	resp  CloneDataResponse
 }
+type adminSetReplicaInconsistencyResponseAlloc struct {
+	union ResponseUnion_AdminSetReplicaInconsistency
+	resp  AdminSetReplicaInconsistencyResponse
+}
 
 func allocBatchResponse(nResps int) *BatchResponse {
 	if nResps <= 1 {
@@ -938,6 +953,7 @@ func (ba *BatchRequest) CreateReply() *BatchResponse {
 	var buf47 []exciseResponseAlloc
 	var buf48 []flushLockTableResponseAlloc
 	var buf49 []cloneDataResponseAlloc
+	var buf50 []adminSetReplicaInconsistencyResponseAlloc
 
 	for i, r := range ba.Requests {
 		switch r.GetValue().(type) {
@@ -1291,6 +1307,13 @@ func (ba *BatchRequest) CreateReply() *BatchResponse {
 			buf49[0].union.CloneData = &buf49[0].resp
 			br.Responses[i].Value = &buf49[0].union
 			buf49 = buf49[1:]
+		case *RequestUnion_AdminSetReplicaInconsistency:
+			if buf50 == nil {
+				buf50 = make([]adminSetReplicaInconsistencyResponseAlloc, counts[50])
+			}
+			buf50[0].union.AdminSetReplicaInconsistency = &buf50[0].resp
+			br.Responses[i].Value = &buf50[0].union
+			buf50 = buf50[1:]
 		default:
 			panic(fmt.Sprintf("unsupported request: %+v", r))
 		}
@@ -1401,6 +1424,8 @@ func CreateRequest(method Method) Request {
 		return &FlushLockTableRequest{}
 	case CloneData:
 		return &CloneDataRequest{}
+	case AdminSetReplicaInconsistency:
+		return &AdminSetReplicaInconsistencyRequest{}
 	default:
 		panic(fmt.Sprintf("unsupported method: %+v", method))
 	}
