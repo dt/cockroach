@@ -172,6 +172,12 @@ const (
 	// in-memory lock table to the replicated lock table.
 	FlushLockTable
 
+	// CloneData is a range-scoped raft command that mounts virtual SSTs
+	// aliasing the request's keyspan into the local store's LSM under a
+	// different prefix (Pebble's VirtualClone). Used by the cluster-fork
+	// (CREATE TENANT FROM) flow. See CloneDataRequest for details.
+	CloneData
+
 	// MaxMethod is the maximum method.
 	MaxMethod Method = iota - 1
 	// NumMethods represents the total number of API methods.

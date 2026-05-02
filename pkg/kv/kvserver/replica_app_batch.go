@@ -322,6 +322,16 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		res.Excise = nil
 	}
 
+	if res.CloneData != nil {
+		// VirtualClone has been applied to the local engine; the destination
+		// keyspan now exposes prefix-rewritten virtual SSTs aliasing the source.
+		// We don't disconnect the source range's rangefeeds (the source data
+		// itself isn't being mutated); destination-range rangefeeds are not a
+		// concern because the destination range carries InconsistentReplicas
+		// and rejects all non-admin requests, including rangefeed setup.
+		res.CloneData = nil
+	}
+
 	if res.Split != nil {
 		// Splits require a new HardState to be written for the new RHS replica,
 		// atomically with the main batch. This cannot be constructed at evaluation

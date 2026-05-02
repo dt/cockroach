@@ -82,6 +82,16 @@ func (s *spanSetEngine) Excise(ctx context.Context, span roachpb.Span) error {
 	return s.e.Excise(ctx, span)
 }
 
+// VirtualClone implements the storage.EngineWithoutRW interface.
+func (s *spanSetEngine) VirtualClone(
+	ctx context.Context, srcSpan roachpb.Span, srcPrefix, dstPrefix []byte,
+) error {
+	if err := s.spans.CheckAllowed(SpanReadOnly, TrickySpan{Key: srcSpan.Key, EndKey: srcSpan.EndKey}); err != nil {
+		return err
+	}
+	return s.e.VirtualClone(ctx, srcSpan, srcPrefix, dstPrefix)
+}
+
 // Download implements the storage.EngineWithoutRW interface.
 func (s *spanSetEngine) Download(ctx context.Context, span roachpb.Span, copy bool) error {
 	if err := s.spans.CheckAllowed(SpanReadWrite, TrickySpan{Key: span.Key, EndKey: span.EndKey}); err != nil {

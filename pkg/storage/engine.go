@@ -938,6 +938,25 @@ type Engine interface {
 	Env() *fs.Env
 	// Excise removes all data for the given span from the engine.
 	Excise(ctx context.Context, span roachpb.Span) error
+	// VirtualClone mounts virtual SSTs aliasing srcSpan in this engine's LSM
+	// under a different prefix: every SST that intersects srcSpan is exposed
+	// as an additional virtual SST whose keys appear under dstPrefix instead
+	// of srcPrefix, sharing the underlying physical backing. The destination
+	// keys (the prefix-rewritten srcSpan) must be empty in this engine.
+	//
+	// srcSpan must lie entirely within [srcPrefix, srcPrefix.PrefixEnd()).
+	//
+	// Used by the cluster-fork (CREATE TENANT FROM) flow as the per-store
+	// engine-level primitive underlying the CloneData raft command. The
+	// caller (CloneData apply) is responsible for first flushing the memtable
+	// over srcSpan if it contains relevant keys.
+	//
+	// VirtualClone must be idempotent on raft replay: re-applying must
+	// detect the destination is already populated and no-op.
+	//
+	// TODO(dt): wire to Pebble's VirtualClone API once it lands; currently
+	// returns an error.
+	VirtualClone(ctx context.Context, srcSpan roachpb.Span, srcPrefix, dstPrefix []byte) error
 	// Flush causes the engine to write all in-memory data to disk
 	// immediately.
 	Flush() error

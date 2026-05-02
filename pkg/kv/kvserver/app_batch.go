@@ -212,5 +212,28 @@ func (b *appBatch) runPostAddTriggers(
 		}
 	}
 
+	if res.CloneData != nil {
+		// CloneData mounts virtual SSTs aliasing res.CloneData.SrcSpan into the
+		// local store under res.CloneData.DstPrefix. The destination range owning
+		// that keyspan is expected to have its InconsistentReplicas bit set; the
+		// transient cross-replica disagreement caused by replicas applying this
+		// at slightly different wall-clock times is hidden behind that bit.
+		// Pebble's VirtualClone flushes any overlapping memtable contents
+		// internally, so we do not need to probe + Flush here.
+		//
+		// TODO(dt): subtract res.CloneData's destination span from this
+		// store's per-replica missing-spans state for the dst range, so
+		// the AdminSetReplicaInconsistency UNLOCK can verify clone
+		// coverage before clearing the bit. See the design brief at
+		// https://gist.github.com/dt/43c293c781ff8508fde592a432af30c2
+		// (Verifying clone coverage at unlock).
+		if err := env.eng.VirtualClone(
+			ctx, res.CloneData.SrcSpan, res.CloneData.SrcPrefix, res.CloneData.DstPrefix,
+		); err != nil {
+			return errors.Wrapf(err, "VirtualClone of %s under prefix %q",
+				res.CloneData.SrcSpan, res.CloneData.DstPrefix)
+		}
+	}
+
 	return nil
 }

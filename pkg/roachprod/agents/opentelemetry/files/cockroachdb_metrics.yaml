@@ -1004,6 +1004,7 @@ distsender_rpc_adminverifyprotectedtimestamp_sent: distsender.rpc.adminverifypro
 distsender_rpc_barrier_sent: distsender.rpc.barrier.sent
 distsender_rpc_checkconsistency_sent: distsender.rpc.checkconsistency.sent
 distsender_rpc_clearrange_sent: distsender.rpc.clearrange.sent
+distsender_rpc_clonedata_sent: distsender.rpc.clonedata.sent
 distsender_rpc_computechecksum_sent: distsender.rpc.computechecksum.sent
 distsender_rpc_conditionalput_sent: distsender.rpc.conditionalput.sent
 distsender_rpc_delete_sent: distsender.rpc.delete.sent
@@ -2232,6 +2233,7 @@ rpc_method_adminverifyprotectedtimestamp_recv: rpc.method.adminverifyprotectedti
 rpc_method_barrier_recv: rpc.method.barrier.recv
 rpc_method_checkconsistency_recv: rpc.method.checkconsistency.recv
 rpc_method_clearrange_recv: rpc.method.clearrange.recv
+rpc_method_clonedata_recv: rpc.method.clonedata.recv
 rpc_method_computechecksum_recv: rpc.method.computechecksum.recv
 rpc_method_conditionalput_recv: rpc.method.conditionalput.recv
 rpc_method_delete_recv: rpc.method.delete.recv

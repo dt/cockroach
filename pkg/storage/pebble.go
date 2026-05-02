@@ -2366,6 +2366,20 @@ func (p *Pebble) Excise(ctx context.Context, span roachpb.Span) error {
 	return p.db.Excise(ctx, rawSpan)
 }
 
+// VirtualClone implements the Engine interface.
+//
+// TODO(dt): wire to Pebble's VirtualClone API (currently in flight on the
+// cockroachdb/pebble `clone` branch). The signature here is the CRDB-side
+// shape we want regardless of how the Pebble surface lands.
+func (p *Pebble) VirtualClone(
+	ctx context.Context, srcSpan roachpb.Span, srcPrefix, dstPrefix []byte,
+) error {
+	return errors.AssertionFailedf(
+		"VirtualClone not yet wired to Pebble (srcSpan=%s, srcPrefix=%q, dstPrefix=%q)",
+		srcSpan, srcPrefix, dstPrefix,
+	)
+}
+
 // IngestLocalFiles implements the Engine interface.
 func (p *Pebble) IngestLocalFiles(ctx context.Context, paths []string) error {
 	return p.db.Ingest(ctx, paths)

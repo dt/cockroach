@@ -373,6 +373,13 @@ func (p *Result) MergeAndDestroy(q Result) error {
 	}
 	q.Replicated.LinkExternalSSTable = nil
 
+	if p.Replicated.CloneData == nil {
+		p.Replicated.CloneData = q.Replicated.CloneData
+	} else if q.Replicated.CloneData != nil {
+		return errors.AssertionFailedf("conflicting CloneData")
+	}
+	q.Replicated.CloneData = nil
+
 	if p.Replicated.Excise == nil {
 		p.Replicated.Excise = q.Replicated.Excise
 	} else if q.Replicated.Excise != nil {

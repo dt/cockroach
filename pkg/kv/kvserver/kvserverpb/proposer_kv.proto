@@ -281,6 +281,22 @@ message ReplicatedEvalResult {
 
   LinkExternalSSTable link_external_sstable = 27 [(gogoproto.customname) = "LinkExternalSSTable"];
 
+  // CloneData is a side effect that runs on every replica before the Raft
+  // application is committed. Each replica calls Engine.VirtualClone to
+  // mount virtual SSTs aliasing SrcSpan in the local LSM under DstPrefix
+  // (substituting SrcPrefix). Used by the cluster-fork (CREATE TENANT
+  // FROM) flow.
+  //
+  // Apply must be idempotent — on raft replay it should detect that the
+  // virtual SSTs are already mounted and no-op (Pebble's VirtualClone is
+  // expected to handle this).
+  message CloneData {
+    roachpb.Span src_span = 1 [(gogoproto.nullable) = false];
+    bytes src_prefix = 2;
+    bytes dst_prefix = 3;
+  }
+  CloneData clone_data = 31 [(gogoproto.customname) = "CloneData"];
+
   // DoTimelyApplicationToAllReplicas is set to true when this proposal needs
   // to be applied on all replicas in a timely manner for various reasons
   // (currently for certain proposals during a split or merge or below-raft

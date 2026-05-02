@@ -961,6 +961,9 @@ func (*LinkExternalSSTableRequest) Method() Method { return LinkExternalSSTable 
 func (*ExciseRequest) Method() Method { return Excise }
 
 // Method implements the Request interface.
+func (*CloneDataRequest) Method() Method { return CloneData }
+
+// Method implements the Request interface.
 func (*MigrateRequest) Method() Method { return Migrate }
 
 // Method implements the Request interface.
@@ -1220,6 +1223,12 @@ func (r *LinkExternalSSTableRequest) ShallowCopy() Request {
 
 // ShallowCopy implements the Request interface.
 func (r *ExciseRequest) ShallowCopy() Request {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Request interface.
+func (r *CloneDataRequest) ShallowCopy() Request {
 	shallowCopy := *r
 	return &shallowCopy
 }
@@ -1512,6 +1521,12 @@ func (r *LinkExternalSSTableResponse) ShallowCopy() Response {
 
 // ShallowCopy implements the Response interface.
 func (r *ExciseResponse) ShallowCopy() Response {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Response interface.
+func (r *CloneDataResponse) ShallowCopy() Response {
 	shallowCopy := *r
 	return &shallowCopy
 }
@@ -2080,6 +2095,14 @@ func (r *LinkExternalSSTableRequest) flags() flag {
 
 func (r *ExciseRequest) flags() flag {
 	return isWrite | isRange | isAlone | bypassesReplicaCircuitBreaker
+}
+
+func (r *CloneDataRequest) flags() flag {
+	// CloneData is a write that mounts virtual SSTs into a foreign keyspan;
+	// it doesn't take normal range-write semantics over its source span (no
+	// MVCC writes happen there), but it does mutate the local engine and
+	// must apply on every replica via raft. Modeled on AddSSTable's flags.
+	return isWrite | isRange | isAlone | isUnsplittable | canBackpressure | bypassesReplicaCircuitBreaker
 }
 
 func (*MigrateRequest) flags() flag { return isWrite | isRange | isAlone }

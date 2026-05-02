@@ -2184,6 +2184,40 @@ message AddSSTableResponse {
   bytes following_likely_non_empty_span_start = 4 [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.Key"];
 }
 
+// CloneDataRequest is a range-scoped raft command used by the cluster-fork
+// (CREATE TENANT FROM) flow. On apply, each replica of the source range
+// mounts virtual SSTs aliasing the request's keyspan into the same store's
+// LSM under a different prefix (Pebble's VirtualClone), making the source
+// range's data visible at the destination span on every store that hosts a
+// source replica.
+//
+// Apply on each source-range replica:
+//   1. Probe the memtable for any keys in [Header.Key, Header.EndKey); if
+//      non-empty, flush the engine so all source data is in SSTs.
+//   2. Call VirtualClone(srcSpan, SrcPrefix, DstPrefix) on the local engine.
+//
+// Each replica's apply produces deterministic local artifacts: same keys
+// returned by an iterator over the destination span, regardless of which
+// underlying SST files happen to back them on a given store. The destination
+// range that owns the destination span must have its InconsistentReplicas
+// timestamp set: it will transiently disagree across replicas while
+// CloneData propagates, and that's expected.
+message CloneDataRequest {
+  RequestHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+  // SrcPrefix is the key prefix that the source span lies under. It is the
+  // prefix that will be substituted out of the cloned virtual SSTs.
+  bytes src_prefix = 2;
+  // DstPrefix is the key prefix that SrcPrefix will be substituted with in
+  // the cloned virtual SSTs, so the same data appears under the destination
+  // keyspace.
+  bytes dst_prefix = 3;
+}
+
+// CloneDataResponse is the response to a CloneData() operation.
+message CloneDataResponse {
+  ResponseHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+}
+
 // LinkExternalSSTableRequest contains arguments to the LinkExternalSSTable
 // method, which links an External SST file into the Pebble log-structured
 // merge-tree. The External SST must point to a backup file which contains
@@ -2579,6 +2613,7 @@ message RequestUnion {
     LinkExternalSSTableRequest link_external_sstable = 57;
     ExciseRequest excise = 58;
     FlushLockTableRequest flush_lock_table = 59;
+    CloneDataRequest clone_data = 60;
   }
   reserved 8, 15, 23, 25, 26, 27, 31, 34, 49, 52;
 }
@@ -2635,6 +2670,7 @@ message ResponseUnion {
     LinkExternalSSTableResponse link_external_sstable = 57;
     ExciseResponse excise = 58;
     FlushLockTableResponse flush_lock_table = 59;
+    CloneDataResponse clone_data = 60;
   }
   reserved 8, 15, 23, 25, 26, 27, 28, 31, 34, 49, 52;
 }
