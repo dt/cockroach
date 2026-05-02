@@ -5091,7 +5091,10 @@ logical_replication_create_table_options:
 // %Help: CREATE VIRTUAL CLUSTER - create a new virtual cluster
 // %Category: Experimental
 // %Text:
-// CREATE VIRTUAL CLUSTER [ IF NOT EXISTS ] name [ <replication> ]
+// CREATE VIRTUAL CLUSTER [ IF NOT EXISTS ] name [ <fork> | <replication> ]
+//
+// Fork option:
+//    FROM name
 //
 // Replication option:
 //    FROM REPLICATION OF name ON <location> [ WITH OPTIONS ... ]
@@ -5130,6 +5133,23 @@ create_virtual_cluster_stmt:
       ReplicationSourceTenantName: &tree.TenantSpec{IsName: true, Expr: $10.expr()},
       ReplicationSourceConnUri: $12.expr(),
       Options: *$13.tenantReplicationOptions(),
+    }
+  }
+| CREATE virtual_cluster virtual_cluster_spec FROM d_expr
+  {
+    /* SKIP DOC */
+    $$.val = &tree.CreateTenantFromTenant{
+      TenantSpec: $3.tenantSpec(),
+      SourceTenantSpec: &tree.TenantSpec{IsName: true, Expr: $5.expr()},
+    }
+  }
+| CREATE virtual_cluster IF NOT EXISTS virtual_cluster_spec FROM d_expr
+  {
+    /* SKIP DOC */
+    $$.val = &tree.CreateTenantFromTenant{
+      IfNotExists: true,
+      TenantSpec: $6.tenantSpec(),
+      SourceTenantSpec: &tree.TenantSpec{IsName: true, Expr: $8.expr()},
     }
   }
 | CREATE virtual_cluster error // SHOW HELP: CREATE VIRTUAL CLUSTER

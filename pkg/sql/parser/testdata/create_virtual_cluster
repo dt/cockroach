@@ -117,3 +117,35 @@ CREATE VIRTUAL CLUSTER destination FROM REPLICATION OF ('a' || 'b') ON ('pg' || 
 CREATE VIRTUAL CLUSTER (destination) FROM REPLICATION OF (((('a') || ('b')))) ON (((('pg') || ('url')))) -- fully parenthesized
 CREATE VIRTUAL CLUSTER destination FROM REPLICATION OF ('_' || '_') ON ('_' || '_') -- literals removed
 CREATE VIRTUAL CLUSTER _ FROM REPLICATION OF ('a' || 'b') ON ('pg' || 'url') -- identifiers removed
+
+parse
+CREATE VIRTUAL CLUSTER dst FROM src
+----
+CREATE VIRTUAL CLUSTER dst FROM src
+CREATE VIRTUAL CLUSTER (dst) FROM (src) -- fully parenthesized
+CREATE VIRTUAL CLUSTER dst FROM src -- literals removed
+CREATE VIRTUAL CLUSTER _ FROM _ -- identifiers removed
+
+parse
+CREATE TENANT dst FROM src
+----
+CREATE VIRTUAL CLUSTER dst FROM src -- normalized!
+CREATE VIRTUAL CLUSTER (dst) FROM (src) -- fully parenthesized
+CREATE VIRTUAL CLUSTER dst FROM src -- literals removed
+CREATE VIRTUAL CLUSTER _ FROM _ -- identifiers removed
+
+parse
+CREATE VIRTUAL CLUSTER IF NOT EXISTS dst FROM src
+----
+CREATE VIRTUAL CLUSTER IF NOT EXISTS dst FROM src
+CREATE VIRTUAL CLUSTER IF NOT EXISTS (dst) FROM (src) -- fully parenthesized
+CREATE VIRTUAL CLUSTER IF NOT EXISTS dst FROM src -- literals removed
+CREATE VIRTUAL CLUSTER IF NOT EXISTS _ FROM _ -- identifiers removed
+
+parse
+CREATE VIRTUAL CLUSTER "dst-hyphen" FROM "src-hyphen"
+----
+CREATE VIRTUAL CLUSTER "dst-hyphen" FROM "src-hyphen"
+CREATE VIRTUAL CLUSTER ("dst-hyphen") FROM ("src-hyphen") -- fully parenthesized
+CREATE VIRTUAL CLUSTER "dst-hyphen" FROM "src-hyphen" -- literals removed
+CREATE VIRTUAL CLUSTER _ FROM _ -- identifiers removed

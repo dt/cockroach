@@ -2309,6 +2309,34 @@ func (node *CreateTenant) Format(ctx *FmtCtx) {
 	ctx.FormatNode(node.TenantSpec)
 }
 
+// CreateTenantFromTenant represents a CREATE VIRTUAL CLUSTER...FROM
+// <source> statement: a synchronous, in-cluster fork that allocates an
+// empty destination tenant and clones the source tenant's keyspace into
+// it. Unlike CreateTenantFromReplication this is not a replication
+// stream; the clone is a single point-in-time snapshot driven by
+// pkg/sql/clusterfork.
+type CreateTenantFromTenant struct {
+	IfNotExists bool
+	// TenantSpec is the destination tenant. Per the grammar, it is
+	// always a name (not an ID): the destination must not yet exist.
+	TenantSpec *TenantSpec
+	// SourceTenantSpec is the existing source tenant to fork from.
+	// Constrained to a name by the grammar, mirroring
+	// CreateTenantFromReplication.ReplicationSourceTenantName.
+	SourceTenantSpec *TenantSpec
+}
+
+// Format implements the NodeFormatter interface.
+func (node *CreateTenantFromTenant) Format(ctx *FmtCtx) {
+	ctx.WriteString("CREATE VIRTUAL CLUSTER ")
+	if node.IfNotExists {
+		ctx.WriteString("IF NOT EXISTS ")
+	}
+	ctx.FormatNode(node.TenantSpec)
+	ctx.WriteString(" FROM ")
+	ctx.FormatNode(node.SourceTenantSpec)
+}
+
 // CreateTenantFromReplication represents a CREATE VIRTUAL CLUSTER...FROM REPLICATION
 // statement.
 type CreateTenantFromReplication struct {
