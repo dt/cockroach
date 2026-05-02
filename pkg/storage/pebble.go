@@ -2367,27 +2367,22 @@ func (p *Pebble) Excise(ctx context.Context, span roachpb.Span) error {
 }
 
 // VirtualClone implements the Engine interface.
-//
-// TODO(dt): wire to p.db.VirtualClone once the Pebble clone branch
-// stabilizes. The public API has landed (signature
-// `(ctx, KeyRange, srcPrefix, dstPrefix) error`) but the supporting
-// implementation is mid-flight as of writing; vendoring the branch
-// in via --local-pebble currently produces build errors in Pebble
-// itself. The wiring on this side is one liner once Pebble compiles
-// cleanly:
-//
-//	rawSpan := pebble.KeyRange{
-//	    Start: EngineKey{Key: srcSpan.Key}.Encode(),
-//	    End:   EngineKey{Key: srcSpan.EndKey}.Encode(),
-//	}
-//	return p.db.VirtualClone(ctx, rawSpan, srcPrefix, dstPrefix)
 func (p *Pebble) VirtualClone(
 	ctx context.Context, srcSpan roachpb.Span, srcPrefix, dstPrefix []byte,
 ) error {
-	return errors.AssertionFailedf(
-		"VirtualClone not yet wired to Pebble (srcSpan=%s, srcPrefix=%q, dstPrefix=%q)",
-		srcSpan, srcPrefix, dstPrefix,
-	)
+	rawSpan := pebble.KeyRange{
+		Start: EngineKey{Key: srcSpan.Key}.Encode(),
+		End:   EngineKey{Key: srcSpan.EndKey}.Encode(),
+	}
+	// The prefixes passed to Pebble are the raw user-key prefixes (no
+	// engine-key encoding). The substitution operates byte-for-byte on
+	// what is literally shared at the start of every in-block encoded
+	// key; for a tenant prefix the only shared bytes are the tenant ID
+	// itself (no MVCC sentinel — that byte sits at a different offset
+	// in every key). Wrapping in EngineKey{}.Encode() would append a
+	// 0x00 sentinel that is not part of any data key's literal prefix,
+	// causing Pebble's per-block validation to (correctly) reject.
+	return p.db.VirtualClone(ctx, rawSpan, srcPrefix, dstPrefix)
 }
 
 // IngestLocalFiles implements the Engine interface.
@@ -2605,7 +2600,7 @@ func (p *Pebble) CreateCheckpoint(dir string, spans []roachpb.Span) error {
 // named version, it can be assumed all *nodes* have ratcheted to the pebble
 // version associated with it, since they did so during the fence version.
 var pebbleFormatVersionMap = map[clusterversion.Key]pebble.FormatMajorVersion{
-	clusterversion.V26_3: pebble.FormatRowblkMarkedForCompaction,
+	clusterversion.V26_3: pebble.FormatPrefixSubstitution,
 	clusterversion.V26_1: pebble.FormatMarkForCompactionInVersionEdit,
 	clusterversion.V25_4: pebble.FormatV2BlobFiles,
 }
