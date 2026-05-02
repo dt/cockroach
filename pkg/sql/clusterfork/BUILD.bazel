@@ -1,0 +1,19 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "clusterfork",
+    srcs = ["clusterfork.go"],
+    importpath = "github.com/cockroachdb/cockroach/pkg/sql/clusterfork",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/keys",
+        "//pkg/kv",
+        "//pkg/kv/kvclient",
+        "//pkg/kv/kvpb",
+        "//pkg/roachpb",
+        "//pkg/util/hlc",
+        "//pkg/util/log",
+        "//pkg/util/tracing",
+        "@com_github_cockroachdb_errors//:errors",
+    ],
+)

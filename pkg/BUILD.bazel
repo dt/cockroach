@@ -2165,6 +2165,7 @@ GO_TARGETS = [
     "//pkg/sql/catalog/zone:zone",
     "//pkg/sql/catalog:catalog",
     "//pkg/sql/catalog:catalog_test",
+    "//pkg/sql/clusterfork:clusterfork",
     "//pkg/sql/clusterunique:clusterunique",
     "//pkg/sql/clusterunique:clusterunique_test",
     "//pkg/sql/colcontainer:colcontainer",
