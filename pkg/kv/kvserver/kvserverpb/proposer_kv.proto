@@ -294,6 +294,7 @@ message ReplicatedEvalResult {
     roachpb.Span src_span = 1 [(gogoproto.nullable) = false];
     bytes src_prefix = 2;
     bytes dst_prefix = 3;
+    roachpb.Span dst_span = 4 [(gogoproto.nullable) = false];
   }
   CloneData clone_data = 31 [(gogoproto.customname) = "CloneData"];
 

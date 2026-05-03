@@ -2211,6 +2211,14 @@ message CloneDataRequest {
   // the cloned virtual SSTs, so the same data appears under the destination
   // keyspace.
   bytes dst_prefix = 3;
+  // DstSpan is the destination keyspan: the source span (header.Key,
+  // header.EndKey) with SrcPrefix swapped for DstPrefix. The caller must
+  // provide it explicitly because Pebble cannot derive a destination
+  // exclusive upper bound from a prefix swap when the source span's End
+  // key sits outside SrcPrefix (e.g. CRDB's standard
+  // [prefix, prefix.PrefixEnd()) shape, where PrefixEnd() is by
+  // construction outside the prefix).
+  roachpb.Span dst_span = 4 [(gogoproto.nullable) = false];
 }
 
 // CloneDataResponse is the response to a CloneData() operation.

@@ -942,9 +942,17 @@ type Engine interface {
 	// under a different prefix: every SST that intersects srcSpan is exposed
 	// as an additional virtual SST whose keys appear under dstPrefix instead
 	// of srcPrefix, sharing the underlying physical backing. The destination
-	// keys (the prefix-rewritten srcSpan) must be empty in this engine.
+	// span (dstSpan) is excised atomically with the install so any pre-
+	// existing data or tombstones in that region are wiped before the cloned
+	// virtual SSTs land.
 	//
 	// srcSpan must lie entirely within [srcPrefix, srcPrefix.PrefixEnd()).
+	// dstSpan must lie entirely within [dstPrefix, dstPrefix.PrefixEnd()) and
+	// must be the substitution image of srcSpan: the caller is responsible
+	// for constructing dstSpan as srcSpan with srcPrefix swapped for
+	// dstPrefix (Pebble cannot derive a destination exclusive upper bound
+	// from a prefix swap when srcSpan.EndKey sits outside srcPrefix, e.g.
+	// CRDB's standard [prefix, prefix.PrefixEnd()) shape).
 	//
 	// Used by the cluster-fork (CREATE TENANT FROM) flow as the per-store
 	// engine-level primitive underlying the CloneData raft command. The
@@ -953,10 +961,11 @@ type Engine interface {
 	//
 	// VirtualClone must be idempotent on raft replay: re-applying must
 	// detect the destination is already populated and no-op.
-	//
-	// TODO(dt): wire to Pebble's VirtualClone API once it lands; currently
-	// returns an error.
-	VirtualClone(ctx context.Context, srcSpan roachpb.Span, srcPrefix, dstPrefix []byte) error
+	VirtualClone(
+		ctx context.Context,
+		srcSpan roachpb.Span, srcPrefix []byte,
+		dstSpan roachpb.Span, dstPrefix []byte,
+	) error
 	// Flush causes the engine to write all in-memory data to disk
 	// immediately.
 	Flush() error

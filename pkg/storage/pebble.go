@@ -2368,11 +2368,17 @@ func (p *Pebble) Excise(ctx context.Context, span roachpb.Span) error {
 
 // VirtualClone implements the Engine interface.
 func (p *Pebble) VirtualClone(
-	ctx context.Context, srcSpan roachpb.Span, srcPrefix, dstPrefix []byte,
+	ctx context.Context,
+	srcSpan roachpb.Span, srcPrefix []byte,
+	dstSpan roachpb.Span, dstPrefix []byte,
 ) error {
-	rawSpan := pebble.KeyRange{
+	rawSrcSpan := pebble.KeyRange{
 		Start: EngineKey{Key: srcSpan.Key}.Encode(),
 		End:   EngineKey{Key: srcSpan.EndKey}.Encode(),
+	}
+	rawDstSpan := pebble.KeyRange{
+		Start: EngineKey{Key: dstSpan.Key}.Encode(),
+		End:   EngineKey{Key: dstSpan.EndKey}.Encode(),
 	}
 	// The prefixes passed to Pebble are the raw user-key prefixes (no
 	// engine-key encoding). The substitution operates byte-for-byte on
@@ -2382,7 +2388,7 @@ func (p *Pebble) VirtualClone(
 	// in every key). Wrapping in EngineKey{}.Encode() would append a
 	// 0x00 sentinel that is not part of any data key's literal prefix,
 	// causing Pebble's per-block validation to (correctly) reject.
-	return p.db.VirtualClone(ctx, rawSpan, srcPrefix, dstPrefix)
+	return p.db.VirtualClone(ctx, rawSrcSpan, srcPrefix, rawDstSpan, dstPrefix)
 }
 
 // IngestLocalFiles implements the Engine interface.

@@ -63,6 +63,9 @@ func EvalCloneData(
 	if len(srcSpan.Key) == 0 || len(srcSpan.EndKey) == 0 {
 		return result.Result{}, errors.New("CloneData: request must have a non-empty span")
 	}
+	if len(args.DstSpan.Key) == 0 || len(args.DstSpan.EndKey) == 0 {
+		return result.Result{}, errors.New("CloneData: DstSpan must be non-empty")
+	}
 	srcPrefixEnd := roachpb.Key(args.SrcPrefix).PrefixEnd()
 	if bytes.Compare(srcSpan.Key, args.SrcPrefix) < 0 ||
 		bytes.Compare(srcSpan.EndKey, srcPrefixEnd) > 0 {
@@ -71,12 +74,21 @@ func EvalCloneData(
 			srcSpan.Key, srcSpan.EndKey, args.SrcPrefix, srcPrefixEnd,
 		)
 	}
+	dstPrefixEnd := roachpb.Key(args.DstPrefix).PrefixEnd()
+	if bytes.Compare(args.DstSpan.Key, args.DstPrefix) < 0 ||
+		bytes.Compare(args.DstSpan.EndKey, dstPrefixEnd) > 0 {
+		return result.Result{}, errors.Errorf(
+			"CloneData: destination span [%s, %s) must lie within [DstPrefix=%q, %s)",
+			args.DstSpan.Key, args.DstSpan.EndKey, args.DstPrefix, dstPrefixEnd,
+		)
+	}
 
 	return result.Result{
 		Replicated: kvserverpb.ReplicatedEvalResult{
 			CloneData: &kvserverpb.ReplicatedEvalResult_CloneData{
 				SrcSpan:   srcSpan,
 				SrcPrefix: args.SrcPrefix,
+				DstSpan:   args.DstSpan,
 				DstPrefix: args.DstPrefix,
 			},
 		},

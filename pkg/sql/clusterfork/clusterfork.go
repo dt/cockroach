@@ -323,21 +323,51 @@ func setReplicaInconsistency(
 
 // sendCloneData issues a CloneData raft command against the source
 // range covering srcSpan, asking it to mount virtual SSTs aliasing
-// srcSpan under dstPrefix on every replica's local store.
+// srcSpan under dstPrefix on every replica's local store. The
+// destination span is the substitution image of srcSpan: srcPrefix
+// swapped for dstPrefix on both bounds.
 func sendCloneData(
 	ctx context.Context, db *kv.DB, srcSpan roachpb.Span, srcPrefix, dstPrefix roachpb.Key,
 ) error {
+	dstSpan := roachpb.Span{
+		Key:    rewriteSpanBound(srcSpan.Key, srcPrefix, dstPrefix),
+		EndKey: rewriteSpanBound(srcSpan.EndKey, srcPrefix, dstPrefix),
+	}
 	req := &kvpb.CloneDataRequest{
 		RequestHeader: kvpb.RequestHeader{
 			Key:    srcSpan.Key,
 			EndKey: srcSpan.EndKey,
 		},
 		SrcPrefix: srcPrefix,
+		DstSpan:   dstSpan,
 		DstPrefix: dstPrefix,
 	}
 	b := &kv.Batch{}
 	b.AddRawRequest(req)
 	return db.Run(ctx, b)
+}
+
+// rewriteSpanBound translates a span boundary key from srcPrefix space
+// to dstPrefix space. Two cases:
+//
+//   - key starts with srcPrefix → swap prefix (rewritePrefix).
+//   - key equals srcPrefix.PrefixEnd() → return dstPrefix.PrefixEnd().
+//     This is the canonical exclusive upper bound of a tenant span and
+//     is by construction *outside* srcPrefix, so a byte-level prefix
+//     swap would produce dstPrefix instead of dstPrefix.PrefixEnd().
+//
+// Any other shape is an invariant violation (the caller has clamped
+// the source span to lie within [srcPrefix, srcPrefix.PrefixEnd())).
+func rewriteSpanBound(key, srcPrefix, dstPrefix roachpb.Key) roachpb.Key {
+	if bytes.HasPrefix(key, srcPrefix) {
+		return rewritePrefix(key, srcPrefix, dstPrefix)
+	}
+	if bytes.Equal(key, srcPrefix.PrefixEnd()) {
+		return dstPrefix.PrefixEnd()
+	}
+	panic(errors.AssertionFailedf(
+		"span bound %s is neither under srcPrefix=%s nor equal to srcPrefix.PrefixEnd()=%s",
+		key, srcPrefix, srcPrefix.PrefixEnd()))
 }
 
 // revertSpan issues RevertRange across span back to targetTime.

@@ -214,24 +214,42 @@ func (b *appBatch) runPostAddTriggers(
 
 	if res.CloneData != nil {
 		// CloneData mounts virtual SSTs aliasing res.CloneData.SrcSpan into the
-		// local store under res.CloneData.DstPrefix. The destination range owning
-		// that keyspan is expected to have its InconsistentReplicas bit set; the
+		// local store under res.CloneData.DstPrefix. The dst range owning that
+		// keyspan is expected to have its InconsistentReplicas bit set; the
 		// transient cross-replica disagreement caused by replicas applying this
 		// at slightly different wall-clock times is hidden behind that bit.
 		// Pebble's VirtualClone flushes any overlapping memtable contents
 		// internally, so we do not need to probe + Flush here.
 		//
-		// TODO(dt): subtract res.CloneData's destination span from this
-		// store's per-replica missing-spans state for the dst range, so
-		// the AdminSetReplicaInconsistency UNLOCK can verify clone
-		// coverage before clearing the bit. See the design brief at
-		// https://gist.github.com/dt/43c293c781ff8508fde592a432af30c2
-		// (Verifying clone coverage at unlock).
+		// TODO(dt): VirtualClone's contract is destructive — it excises dst
+		// atomically with the install. Re-applying after the dst range has
+		// been unlocked would wipe whatever sits there. The fix is to
+		// relocate this hook into runPostAddTriggersReplicaOnly so it has
+		// access to the dst Replica, then before calling VirtualClone:
+		//   - look up the replica(s) covering res.CloneData.DstSpan
+		//   - skip the clone if any covering replica's InconsistentReplicas
+		//     bit is empty or has lapsed
+		// The same hook is the natural home for the future per-replica
+		// missing-spans bookkeeping (subtract the cloned span so the
+		// unlock-time fanout can verify completeness).
 		if err := env.eng.VirtualClone(
-			ctx, res.CloneData.SrcSpan, res.CloneData.SrcPrefix, res.CloneData.DstPrefix,
+			ctx,
+			res.CloneData.SrcSpan, res.CloneData.SrcPrefix,
+			res.CloneData.DstSpan, res.CloneData.DstPrefix,
 		); err != nil {
-			return errors.Wrapf(err, "VirtualClone of %s under prefix %q",
-				res.CloneData.SrcSpan, res.CloneData.DstPrefix)
+			// TODO(dt): treat as a no-op apply rather than fataling the node.
+			// Returning the error here propagates to maybeFatalOnRaftReadyErr,
+			// which panics the leaseholder; DistSender then retries the
+			// CloneData against the dying cluster forever, manifesting as a
+			// test hang. Once the orchestration has unlock-time clone-coverage
+			// verification (per-replica missing-spans), the absence of cloned
+			// data will be detected there with a clean error. Until then we
+			// log loudly and let the test's own dst-key read assertion fail
+			// fast — at least we get a deterministic failure instead of a
+			// hang.
+			log.KvExec.Errorf(ctx,
+				"VirtualClone of %s into %s failed; skipping (no-op apply): %v",
+				res.CloneData.SrcSpan, res.CloneData.DstSpan, err)
 		}
 	}
 
