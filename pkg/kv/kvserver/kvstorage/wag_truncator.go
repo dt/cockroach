@@ -277,7 +277,7 @@ func (t *WAGTruncator) maybeAdvanceAllowedIndex() {
 func (t *WAGTruncator) clearReplicaRaftLogAndSideloaded(
 	ctx context.Context, raft Raft, rangeID roachpb.RangeID, lastIndex kvpb.RaftIndex,
 ) error {
-	if logstore.UseRaftLogSingleDelete {
+	if logstore.UseRaftLogSingleDelete(t.eng.Separated()) {
 		if err := clearRaftLogWithSingleDelete(
 			ctx, raft.RO, raft.WO, rangeID, lastIndex,
 		); err != nil {
@@ -314,8 +314,9 @@ func (t *WAGTruncator) clearReplicaRaftLogAndSideloaded(
 
 // clearRaftLogWithSingleDelete clears raft log entries using SingleDelete for
 // each point key. Unlike the regular truncation path, this always uses point
-// deletions and never falls back to a range tombstone, because range tombstones
-// are incompatible with SingleDelete.
+// deletions and never falls back to a range tombstone for simplicity.
+// TODO(ibrahim): Let this function use the same pointDelThreshold heuristic
+// when clearning the raft log.
 func clearRaftLogWithSingleDelete(
 	ctx context.Context,
 	r storage.Reader,

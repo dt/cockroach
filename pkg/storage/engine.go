@@ -649,7 +649,7 @@ type Writer interface {
 	// SingleClearUnversioned removes an unversioned item from the db using a
 	// Pebble SingleDelete. It has the same purpose as ClearUnversioned but uses
 	// SingleDelete which is more efficient when the caller can guarantee that
-	// the key has been Set exactly once since the last SingleDelete/Delete.
+	// the key has been Set exactly once since the last deletion.
 	//
 	// WARNING: using this on a key that has been Set multiple times without an
 	// intervening delete will not fully remove the key — it only cancels the
