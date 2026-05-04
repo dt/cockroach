@@ -36,8 +36,6 @@ cockroachdb/spatial:
   label: T-spatial
 cockroachdb/dev-inf:
   label: T-dev-inf
-cockroachdb/drp-eng:
-  label: T-drpeng
 cockroachdb/multiregion:
   label: T-multiregion
 cockroachdb/storage:
