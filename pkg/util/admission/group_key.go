@@ -59,9 +59,6 @@ type groupKey struct {
 	kind groupKind
 }
 
-// isTenant reports whether k identifies a tenant container.
-func (k groupKey) isTenant() bool { return k.kind == tenantKind }
-
 // isRg reports whether k identifies a resource group container.
 func (k groupKey) isRg() bool { return k.kind == rgKind }
 
