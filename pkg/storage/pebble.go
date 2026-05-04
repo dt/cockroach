@@ -2388,26 +2388,71 @@ func (p *Pebble) VirtualClone(
 	// in every key). Wrapping in EngineKey{}.Encode() would append a
 	// 0x00 sentinel that is not part of any data key's literal prefix,
 	// causing Pebble's per-block validation to (correctly) reject.
-	if log.V(2) {
-		log.Storage.Infof(ctx,
-			"VirtualClone bytes: srcRaw=[% x,% x) srcEnc=[% x,% x) srcPrefix=% x dstRaw=[% x,% x) dstEnc=[% x,% x) dstPrefix=% x",
-			srcSpan.Key, srcSpan.EndKey, rawSrcSpan.Start, rawSrcSpan.End, srcPrefix,
-			dstSpan.Key, dstSpan.EndKey, rawDstSpan.Start, rawDstSpan.End, dstPrefix)
-	}
+	log.Storage.Infof(ctx,
+		"VirtualClone bytes: srcRaw=[% x,% x) srcEnc=[% x,% x) srcPrefix=% x(len=%d) dstRaw=[% x,% x) dstEnc=[% x,% x) dstPrefix=% x(len=%d)",
+		srcSpan.Key, srcSpan.EndKey, rawSrcSpan.Start, rawSrcSpan.End, srcPrefix, len(srcPrefix),
+		dstSpan.Key, dstSpan.EndKey, rawDstSpan.Start, rawDstSpan.End, dstPrefix, len(dstPrefix))
 	err := p.db.VirtualClone(ctx, rawSrcSpan, srcPrefix, rawDstSpan, dstPrefix)
-	if log.V(2) {
-		// Post-clone diagnostic: count SSTs intersecting dstSpan so the caller
-		// can correlate "VirtualClone returned success" with whether data
-		// actually landed.
-		infos, mErr := p.GetTableMetrics(dstSpan.Key, dstSpan.EndKey)
-		if mErr != nil {
-			log.Storage.Infof(ctx, "VirtualClone result: err=%v (post-clone GetTableMetrics failed: %v)",
-				err, mErr)
-		} else {
-			log.Storage.Infof(ctx, "VirtualClone result: err=%v dstSpan=%s post-clone has %d SSTs",
-				err, dstSpan, len(infos))
+	// Post-clone diagnostic: enumerate SSTs intersecting dstSpan with
+	// per-file content summary so the caller can correlate "VirtualClone
+	// returned success" with whether actual data landed (vs e.g.
+	// tombstone-only SSTs from the dst-excise step).
+	infos, mErr := p.GetTableMetrics(dstSpan.Key, dstSpan.EndKey)
+	if mErr != nil {
+		log.Storage.Infof(ctx, "VirtualClone result: err=%v (post-clone GetTableMetrics failed: %v)",
+			err, mErr)
+	} else {
+		log.Storage.Infof(ctx, "VirtualClone result: err=%v dstSpan=%s post-clone has %d SSTs",
+			err, dstSpan, len(infos))
+		for _, ti := range infos {
+			log.Storage.Infof(ctx, "  L%d table %d: %s",
+				ti.Level, ti.TableID, string(ti.TableInfoJSON))
 		}
 	}
+	// Per-fragment internal-key dump over dstSpan: shows actual seqnums of
+	// every point/range tombstone the LSM contains in the dst region.
+	if dumpErr := p.dumpInternalKeys(ctx, rawDstSpan); dumpErr != nil {
+		log.Storage.Infof(ctx, "post-clone internal-key dump failed: %v", dumpErr)
+	}
+	return err
+}
+
+// dumpInternalKeys uses Pebble's ScanInternal to enumerate every internal
+// key (point keys, range deletions, range keys) in [span.Start, span.End),
+// logging each entry's full Trailer (so seqnum+kind are visible). Used as a
+// debugging aid for the cluster-fork CloneData flow when reads return
+// nothing despite the LSM appearing populated.
+func (p *Pebble) dumpInternalKeys(ctx context.Context, span pebble.KeyRange) error {
+	count := 0
+	err := p.db.ScanInternal(ctx, pebble.ScanInternalOptions{
+		IterOptions: pebble.IterOptions{
+			LowerBound: span.Start,
+			UpperBound: span.End,
+			KeyTypes:   pebble.IterKeyTypePointsAndRanges,
+		},
+		IncludeObsoleteKeys: true,
+		VisitPointKey: func(key *pebble.InternalKey, value pebble.LazyValue, _ pebble.IteratorLevel) error {
+			count++
+			log.Storage.Infof(ctx, "  internal: kind=%s seqnum=%d userKey=% x",
+				key.Kind(), key.SeqNum(), key.UserKey)
+			return nil
+		},
+		VisitRangeDel: func(start, end []byte, seqNum pebble.SeqNum) error {
+			count++
+			log.Storage.Infof(ctx, "  internal: kind=RANGEDEL seqnum=%d start=% x end=% x",
+				seqNum, start, end)
+			return nil
+		},
+		VisitRangeKey: func(start, end []byte, keys []rangekey.Key) error {
+			for _, k := range keys {
+				count++
+				log.Storage.Infof(ctx, "  internal: kind=%s seqnum=%d start=% x end=% x suffix=% x",
+					k.Kind(), k.SeqNum(), start, end, k.Suffix)
+			}
+			return nil
+		},
+	})
+	log.Storage.Infof(ctx, "dumped %d internal entries over [% x,% x)", count, span.Start, span.End)
 	return err
 }
 
