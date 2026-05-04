@@ -46,15 +46,6 @@ type replicaAppBatch struct {
 	// batch accumulates writes implied by the raft entries in this batch, across
 	// both the state and raft engines. It is engine separation aware.
 	batch kvstorage.Batch[storage.Batch]
-	// state is this batch's view of the replica's state. It is copied from
-	// under the Replica.mu when the batch is initialized and is updated in
-	// stageTrivialReplicatedEvalResult.
-	//
-	// This is a shallow copy so any mutations inside of pointer fields need
-	// to copy-on-write. The exception to this is `state.Stats`, for which
-	// backing memory has already been provided and which may thus be
-	// modified directly.
-	state kvserverpb.ReplicaState
 	// truncState is this batch's view of the raft log truncation state. It is
 	// copied from under the Replica.mu when the batch is initialized, and remains
 	// constant since raftMu is being held throughout the lifetime of this batch.
@@ -108,9 +99,7 @@ func (b *replicaAppBatch) Stage(
 
 	// We'll follow the steps outlined in appBatch's comment here, and will call
 	// into appBatch at appropriate times.
-	var ab appBatch
-
-	fr, err := ab.assertAndCheckCommand(ctx, &cmd.ReplicatedCmd, &b.state, cmd.IsLocal())
+	fr, err := b.assertAndCheckCommand(ctx, &cmd.ReplicatedCmd, cmd.IsLocal())
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +111,7 @@ func (b *replicaAppBatch) Stage(
 
 	// Now update cmd. We'll either put the lease index in it or zero out
 	// the cmd in case there's a forced error.
-	ab.toCheckedCmd(ctx, &cmd.ReplicatedCmd, fr)
+	b.toCheckedCmd(ctx, &cmd.ReplicatedCmd, fr)
 
 	// TODO(tbg): these assertions should be pushed into
 	// (*appBatch).assertAndCheckCommand.
