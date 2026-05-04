@@ -491,7 +491,13 @@ func doLDRPlan(
 				}
 			}
 
-			err := tabledesc.CheckLogicalReplicationCompatibility(&srcExternalCatalog.Tables[i], destTableDesc.TableDesc(), details.SkipSchemaCheck || details.CreateTable, writer == sqlclustersettings.LDRWriterTypeLegacyKV)
+			err := tabledesc.CheckLogicalReplicationCompatibility(
+				&srcExternalCatalog.Tables[i],
+				destTableDesc.TableDesc(),
+				details.SkipSchemaCheck || details.CreateTable,
+				writer == sqlclustersettings.LDRWriterTypeLegacyKV,
+				details.Mode == jobspb.LogicalReplicationDetails_Transactional,
+			)
 			if err != nil {
 				return err
 			}
