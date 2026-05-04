@@ -34,6 +34,7 @@ service PerReplica {
     rpc CollectChecksum(cockroach.kv.kvserver.CollectChecksumRequest) returns (cockroach.kv.kvserver.CollectChecksumResponse) {}
     rpc WaitForApplication(cockroach.kv.kvserver.WaitForApplicationRequest) returns (cockroach.kv.kvserver.WaitForApplicationResponse) {}
     rpc WaitForReplicaInit(cockroach.kv.kvserver.WaitForReplicaInitRequest) returns (cockroach.kv.kvserver.WaitForReplicaInitResponse) {}
+    rpc CollectMissingSpans(cockroach.kv.kvserver.CollectMissingSpansRequest) returns (cockroach.kv.kvserver.CollectMissingSpansResponse) {}
 }
 
 service PerStore {

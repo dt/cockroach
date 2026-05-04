@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"math/rand"
 	"slices"
 	"time"
@@ -710,17 +711,25 @@ func (r *Replica) adminSetReplicaInconsistencyWithDescriptor(
 		return nil
 	}
 
-	// TODO(dt): on UNLOCK (desired UntilTS = 0), verify that the
-	// CloneData side-effect actually landed on every replica's local
-	// store before clearing the bit. The planned production design
-	// uses per-replica missing-spans state (range-id-local, persisted,
-	// included in raft snapshots) initialized at lock time, decremented
-	// by CloneData apply, and verified via a fanout RPC at unlock. See
-	// the design brief at
-	// https://gist.github.com/dt/43c293c781ff8508fde592a432af30c2
-	// (Verifying clone coverage at unlock). For the prototype we trust
-	// the orchestration to have driven CloneData to completion; failure
-	// modes are not yet detected.
+	// On UNLOCK (clearing the bit), verify that CloneData covered the full
+	// range on every replica. Each replica persists its own missing-spans
+	// state (range-id-replicated; included in raft snapshots) initialized
+	// at lock time and subtracted by CloneData apply. We fan out a
+	// CollectMissingSpans RPC to each peer; any non-empty response means
+	// that replica still owes coverage, and we refuse the unlock so the
+	// orchestration can react (e.g. by replacing the incomplete replica
+	// via ChangeReplicas, after which the snapshot from a complete sibling
+	// will inherit completeness).
+	//
+	// The trigger handler also checks the local (leaseholder) replica's
+	// missing-spans during eval as defense in depth — if this fanout
+	// somehow missed an incomplete replica, the leaseholder's own check
+	// still catches local incompleteness.
+	if desired.IsEmpty() {
+		if err := r.verifyAllReplicasComplete(ctx, desc); err != nil {
+			return err
+		}
+	}
 
 	return r.store.DB().Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 		_, dbDescValue, _, err := conditionalGetDescValueFromDB(
@@ -761,6 +770,79 @@ func (r *Replica) adminSetReplicaInconsistencyWithDescriptor(
 		})
 		return txn.Run(ctx, b)
 	})
+}
+
+// verifyAllReplicasComplete fans a CollectMissingSpans RPC to every replica
+// in desc and returns an error if any reports a non-empty missing-spans set.
+// The error message lists each incomplete replica together with the spans it
+// still owes, so the caller (typically the cluster-fork orchestration) can
+// take remedial action — most directly, ChangeReplicas to evict the
+// incomplete replicas, after which the replacement catches up via raft
+// snapshot from a complete sibling and inherits the empty missing-spans.
+func (r *Replica) verifyAllReplicasComplete(
+	ctx context.Context, desc *roachpb.RangeDescriptor,
+) error {
+	type result struct {
+		replica roachpb.ReplicaDescriptor
+		spans   []roachpb.Span
+		err     error
+	}
+	replicas := desc.Replicas().Descriptors()
+	resultCh := make(chan result, len(replicas))
+	dialer := r.store.cfg.NodeDialer
+	for _, replica := range replicas {
+		go func(replica roachpb.ReplicaDescriptor) {
+			res := result{replica: replica}
+			defer func() { resultCh <- res }()
+			client, err := DialPerReplicaClient(dialer, ctx, replica.NodeID, rpcbase.DefaultClass)
+			if err != nil {
+				res.err = errors.Wrapf(err, "dial n%d", replica.NodeID)
+				return
+			}
+			req := &CollectMissingSpansRequest{
+				StoreRequestHeader: StoreRequestHeader{
+					NodeID: replica.NodeID, StoreID: replica.StoreID,
+				},
+				RangeID: desc.RangeID,
+			}
+			resp, err := client.CollectMissingSpans(ctx, req)
+			if err != nil {
+				res.err = errors.Wrapf(err, "CollectMissingSpans on n%d/s%d", replica.NodeID, replica.StoreID)
+				return
+			}
+			res.spans = resp.Spans
+		}(replica)
+	}
+	var incomplete []result
+	var dialErrs []error
+	for range replicas {
+		res := <-resultCh
+		switch {
+		case res.err != nil:
+			dialErrs = append(dialErrs, res.err)
+		case len(res.spans) > 0:
+			incomplete = append(incomplete, res)
+		}
+	}
+	if len(dialErrs) > 0 {
+		// We don't know whether the unreachable replicas are complete or
+		// not; refuse the unlock conservatively so the caller doesn't
+		// clear the bit on a possibly-incomplete range.
+		return errors.Wrapf(errors.Join(dialErrs...),
+			"r%d: cannot verify clone completeness on %d/%d replicas; refusing unlock",
+			desc.RangeID, len(dialErrs), len(replicas))
+	}
+	if len(incomplete) > 0 {
+		var details strings.Builder
+		for _, inc := range incomplete {
+			fmt.Fprintf(&details, "\n  n%d/s%d missing %v",
+				inc.replica.NodeID, inc.replica.StoreID, inc.spans)
+		}
+		return errors.Newf(
+			"r%d: clone is incomplete on %d/%d replicas; refusing unlock:%s",
+			desc.RangeID, len(incomplete), len(replicas), details.String())
+	}
+	return nil
 }
 
 // executeAdminCommandWithDescriptor wraps a read-modify-write operation for RangeDescriptors in a

@@ -9,6 +9,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage/wag"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage/wag/wagpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -63,6 +64,33 @@ func (is Server) CollectChecksum(
 				return err
 			}
 			resp = &ccr
+			return nil
+		})
+	return resp, err
+}
+
+// CollectMissingSpans implements PerReplicaServer. It returns the addressed
+// replica's current per-replica missing-spans state, used by the cluster-fork
+// unlock path to verify that CloneData covered the full range on every
+// replica before clearing the InconsistentReplicas bit.
+func (is Server) CollectMissingSpans(
+	ctx context.Context, req *CollectMissingSpansRequest,
+) (*CollectMissingSpansResponse, error) {
+	resp := &CollectMissingSpansResponse{}
+	err := is.execStoreCommand(ctx, req.StoreRequestHeader,
+		func(ctx context.Context, s *Store) error {
+			ctx, cancel := s.stopper.WithCancelOnQuiesce(ctx)
+			defer cancel()
+			r, err := s.GetReplica(req.RangeID)
+			if err != nil {
+				return err
+			}
+			sl := kvstorage.MakeStateLoader(r.RangeID)
+			ms, err := sl.LoadRangeMissingSpans(ctx, s.StateEngine())
+			if err != nil {
+				return errors.Wrapf(err, "load missing-spans on r%d", req.RangeID)
+			}
+			resp.Spans = ms.Spans
 			return nil
 		})
 	return resp, err

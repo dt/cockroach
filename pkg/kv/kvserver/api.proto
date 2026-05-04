@@ -108,3 +108,20 @@ message CompactionConcurrencyRequest {
 
 message CompactionConcurrencyResponse {
 }
+
+// CollectMissingSpansRequest asks the addressed replica for its current
+// per-replica missing-spans state, used by the cluster-fork unlock path to
+// verify that CloneData covered the full range on every replica before
+// clearing the InconsistentReplicas bit.
+message CollectMissingSpansRequest {
+  StoreRequestHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+  int64 range_id = 2 [(gogoproto.customname) = "RangeID",
+      (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.RangeID"];
+}
+
+// CollectMissingSpansResponse returns the addressed replica's current
+// missing-spans state. An empty `spans` means the range is complete on this
+// replica.
+message CollectMissingSpansResponse {
+  repeated roachpb.Span spans = 1 [(gogoproto.nullable) = false];
+}
