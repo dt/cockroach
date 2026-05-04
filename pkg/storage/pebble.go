@@ -2388,7 +2388,27 @@ func (p *Pebble) VirtualClone(
 	// in every key). Wrapping in EngineKey{}.Encode() would append a
 	// 0x00 sentinel that is not part of any data key's literal prefix,
 	// causing Pebble's per-block validation to (correctly) reject.
-	return p.db.VirtualClone(ctx, rawSrcSpan, srcPrefix, rawDstSpan, dstPrefix)
+	if log.V(2) {
+		log.Storage.Infof(ctx,
+			"VirtualClone bytes: srcRaw=[% x,% x) srcEnc=[% x,% x) srcPrefix=% x dstRaw=[% x,% x) dstEnc=[% x,% x) dstPrefix=% x",
+			srcSpan.Key, srcSpan.EndKey, rawSrcSpan.Start, rawSrcSpan.End, srcPrefix,
+			dstSpan.Key, dstSpan.EndKey, rawDstSpan.Start, rawDstSpan.End, dstPrefix)
+	}
+	err := p.db.VirtualClone(ctx, rawSrcSpan, srcPrefix, rawDstSpan, dstPrefix)
+	if log.V(2) {
+		// Post-clone diagnostic: count SSTs intersecting dstSpan so the caller
+		// can correlate "VirtualClone returned success" with whether data
+		// actually landed.
+		infos, mErr := p.GetTableMetrics(dstSpan.Key, dstSpan.EndKey)
+		if mErr != nil {
+			log.Storage.Infof(ctx, "VirtualClone result: err=%v (post-clone GetTableMetrics failed: %v)",
+				err, mErr)
+		} else {
+			log.Storage.Infof(ctx, "VirtualClone result: err=%v dstSpan=%s post-clone has %d SSTs",
+				err, dstSpan, len(infos))
+		}
+	}
+	return err
 }
 
 // IngestLocalFiles implements the Engine interface.
