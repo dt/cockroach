@@ -43,9 +43,6 @@ type replicaAppBatch struct {
 	r          *Replica
 	applyStats *applyCommittedEntriesStats
 
-	// batch accumulates writes implied by the raft entries in this batch, across
-	// both the state and raft engines. It is engine separation aware.
-	batch kvstorage.Batch[storage.Batch]
 	// truncState is this batch's view of the raft log truncation state. It is
 	// copied from under the Replica.mu when the batch is initialized, and remains
 	// constant since raftMu is being held throughout the lifetime of this batch.
@@ -133,7 +130,7 @@ func (b *replicaAppBatch) Stage(
 	}
 
 	// Stage the command's write batch in the application batch.
-	if err := b.addWriteBatch(ctx, b.batch.State(), cmd); err != nil {
+	if err := b.addWriteBatch(ctx, cmd); err != nil {
 		return nil, err
 	}
 
