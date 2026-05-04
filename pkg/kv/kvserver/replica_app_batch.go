@@ -580,36 +580,14 @@ func (b *replicaAppBatch) stageTruncation(
 func (b *replicaAppBatch) stageTrivialReplicatedEvalResult(
 	ctx context.Context, cmd *replicatedCmd,
 ) error {
-	b.state.RaftAppliedIndex = cmd.Index()
-	b.state.RaftAppliedIndexTerm = kvpb.RaftTerm(cmd.Term)
+	// Apply the durable state updates shared with standalone log application.
+	b.stageTrivialResult(&cmd.ReplicatedCmd, cmd.ForcedErrResult)
 
-	// NB: since the command is "trivial" we know the LeaseSequence field is set to
-	// something meaningful if it's nonzero (e.g. cmd is not a lease request). For
-	// a rejected command, cmd.LeaseSequence was zeroed out earlier.
-	if leaseAppliedIndex := cmd.LeaseIndex; leaseAppliedIndex != 0 {
-		b.state.LeaseAppliedIndex = leaseAppliedIndex
-	}
+	// Replica-only: record closed timestamp setter info for diagnostics.
 	if cts := cmd.Cmd.ClosedTimestamp; cts != nil && !cts.IsEmpty() {
-		b.state.RaftClosedTimestamp = *cts
 		b.closedTimestampSetter.record(cmd, b.state.Lease)
 	}
 
-	res := cmd.ReplicatedResult()
-
-	// Special-cased MVCC stats handling to exploit commutativity of stats delta
-	// upgrades. Thanks to commutativity, the spanlatch manager does not have to
-	// serialize on the stats key.
-	deltaStats := res.Delta.ToStats()
-	b.state.Stats.Add(deltaStats)
-
-	if res.DoTimelyApplicationToAllReplicas {
-		// Update the pending ForceFlushIndex of this batch. Writing is deferred to
-		// addAppliedStateToBatch, following the same pattern as AppliedState
-		// fields (RaftAppliedIndex, LeaseAppliedIndex). This allows multiple
-		// commands in the same batch to update ForceFlushIndex, with only the final
-		// value being written.
-		b.state.ForceFlushIndex = roachpb.ForceFlushIndex{Index: cmd.Entry.Index}
-	}
 	return nil
 }
 
