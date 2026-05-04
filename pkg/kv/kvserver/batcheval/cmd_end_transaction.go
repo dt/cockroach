@@ -979,8 +979,59 @@ func RunCommitTrigger(
 		return res, nil
 	}
 	if irt := ct.GetInconsistentReplicasTrigger(); irt != nil {
-		newDesc := *rec.Desc()
+		oldDesc := rec.Desc()
+		newDesc := *oldDesc
 		newDesc.InconsistentReplicas = irt.InconsistentReplicas
+
+		// Maintain the per-replica missing-spans state alongside the
+		// InconsistentReplicas bit, so that an unlock can verify the clone
+		// covered the full range before clearing the bit.
+		sl := MakeStateLoader(rec)
+		switch {
+		case oldDesc.InconsistentReplicas.IsEmpty() && !irt.InconsistentReplicas.IsEmpty():
+			// Lock: initialize missing-spans to the intersection of the
+			// caller's Scope and the range's RSpan. An empty Scope
+			// (back-compat) defaults to the full range. Restricting to
+			// Scope avoids requiring CloneData coverage of out-of-tenant
+			// keyspace the parent range may happen to cover (e.g. the
+			// open-ended right-neighbor range that extends past the
+			// highest tenant).
+			rangeSpan := oldDesc.RSpan().AsRawSpanWithNoLocals()
+			initSpan := rangeSpan
+			if len(irt.Scope.Key) != 0 {
+				initSpan = rangeSpan.Intersect(irt.Scope)
+			}
+			var ms kvserverpb.RangeMissingSpans
+			if initSpan.Valid() {
+				ms.Spans = []roachpb.Span{initSpan}
+			}
+			if err := sl.SetRangeMissingSpans(ctx, batch, ms); err != nil {
+				return result.Result{}, errors.Wrap(err, "initialize range missing-spans")
+			}
+		case !oldDesc.InconsistentReplicas.IsEmpty() && irt.InconsistentReplicas.IsEmpty():
+			// Unlock: refuse if any sub-span of the range is still
+			// uncovered by a CloneData apply on this (leaseholder) store.
+			//
+			// TODO(dt): leaseholder-only check; the full design fans out to
+			// every replica via a VerifyReplicaComplete RPC and lists
+			// incomplete peers so the orchestration can ChangeReplicas to
+			// evict them, with the snapshot inheriting completeness from a
+			// sibling. The leaseholder check catches local incompleteness
+			// but not a follower whose CloneData apply didn't run.
+			ms, err := sl.LoadRangeMissingSpans(ctx, batch)
+			if err != nil {
+				return result.Result{}, errors.Wrap(err, "load range missing-spans")
+			}
+			if len(ms.Spans) != 0 {
+				return result.Result{}, errors.Errorf(
+					"cannot clear InconsistentReplicas on r%d: clone is incomplete on this replica (missing %v)",
+					oldDesc.RangeID, ms.Spans)
+			}
+			if err := sl.ClearRangeMissingSpans(ctx, batch); err != nil {
+				return result.Result{}, errors.Wrap(err, "clear range missing-spans")
+			}
+		}
+
 		var res result.Result
 		res.Replicated.State = &kvserverpb.ReplicaState{
 			Desc: &newDesc,
@@ -1564,6 +1615,45 @@ func splitTriggerHelper(
 			*in.GCThreshold, *in.GCHint, in.ReplicaVersion,
 		); err != nil {
 			return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "unable to write initial Replica state")
+		}
+
+		// If the splitting range is mid-clone (InconsistentReplicas set), the
+		// missing-spans state needs to be partitioned across the two halves so
+		// the unlock-time completeness check on each half sees only the
+		// portion of the original missing-spans that falls inside it. Without
+		// this, the LHS retains the parent's pre-split missing-spans (which
+		// extend into RHS keyspace) and the RHS starts with no missing-spans
+		// state at all (so unlock would incorrectly find it complete).
+		//
+		// The bit itself inherits through splits via the descriptor, so the
+		// presence of InconsistentReplicas on RightDesc means we should also
+		// install missing-spans on the RHS.
+		if !split.RightDesc.InconsistentReplicas.IsEmpty() {
+			lhsLoader := MakeStateLoader(rec)
+			oldMissing, err := lhsLoader.LoadRangeMissingSpans(ctx, batch)
+			if err != nil {
+				return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "load missing-spans for split")
+			}
+			lhsSpan := split.LeftDesc.RSpan().AsRawSpanWithNoLocals()
+			rhsSpan := split.RightDesc.RSpan().AsRawSpanWithNoLocals()
+			intersect := func(spans []roachpb.Span, bound roachpb.Span) []roachpb.Span {
+				out := make([]roachpb.Span, 0, len(spans))
+				for _, s := range spans {
+					if i := s.Intersect(bound); i.Valid() {
+						out = append(out, i)
+					}
+				}
+				return out
+			}
+			lhsMissing := kvserverpb.RangeMissingSpans{Spans: intersect(oldMissing.Spans, lhsSpan)}
+			rhsMissing := kvserverpb.RangeMissingSpans{Spans: intersect(oldMissing.Spans, rhsSpan)}
+			if err := lhsLoader.SetRangeMissingSpans(ctx, batch, lhsMissing); err != nil {
+				return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "write LHS missing-spans for split")
+			}
+			rhsLoader := kvstorage.MakeStateLoader(split.RightDesc.RangeID)
+			if err := rhsLoader.SetRangeMissingSpans(ctx, batch, rhsMissing); err != nil {
+				return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "write RHS missing-spans for split")
+			}
 		}
 	}
 

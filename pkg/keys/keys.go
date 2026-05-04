@@ -371,6 +371,13 @@ func RangeAppliedStateKey(rangeID roachpb.RangeID) roachpb.Key {
 	return MakeRangeIDPrefixBuf(rangeID).RangeAppliedStateKey()
 }
 
+// RangeMissingSpansKey returns a system-local key for the range's
+// missing-spans state. See LocalRangeMissingSpansSuffix for the role of
+// this key in the cluster-fork CloneData flow.
+func RangeMissingSpansKey(rangeID roachpb.RangeID) roachpb.Key {
+	return MakeRangeIDPrefixBuf(rangeID).RangeMissingSpansKey()
+}
+
 // RangeForceFlushKey returns a system-local key for the range force flush key.
 func RangeForceFlushKey(rangeID roachpb.RangeID) roachpb.Key {
 	return MakeRangeIDPrefixBuf(rangeID).RangeForceFlushKey()
@@ -1252,6 +1259,12 @@ func (b RangeIDPrefixBuf) ReplicatedSharedLocksTransactionLatchingKey(txnID uuid
 // See comment on RangeAppliedStateKey function.
 func (b RangeIDPrefixBuf) RangeAppliedStateKey() roachpb.Key {
 	return append(b.ReplicatedPrefix(), LocalRangeAppliedStateSuffix...)
+}
+
+// RangeMissingSpansKey returns a system-local key for the range's
+// missing-spans state. See LocalRangeMissingSpansSuffix.
+func (b RangeIDPrefixBuf) RangeMissingSpansKey() roachpb.Key {
+	return append(b.ReplicatedPrefix(), LocalRangeMissingSpansSuffix...)
 }
 
 // RangeForceFlushKey returns a system-local key for the range force flush

@@ -308,6 +308,20 @@ message InconsistentReplicasTrigger {
   // Empty (zero-valued) means "clear the lease"; non-zero means "lock
   // until that time".
   util.hlc.Timestamp inconsistent_replicas = 1 [(gogoproto.nullable) = false];
+
+  // Scope is the keyspace the caller intends to clone into this range.
+  // The trigger initializes per-replica missing-spans bookkeeping to the
+  // intersection of Scope and the locked range's RSpan, so the unlock-time
+  // completeness check only requires CloneData coverage of in-scope
+  // sub-spans. An empty Scope (back-compat default) defaults to the full
+  // RSpan.
+  //
+  // The orchestration sets Scope to the destination tenant's keyspan when
+  // locking the parent range, so any out-of-tenant keyspace the parent
+  // range happens to cover (e.g. the always-present "right neighbor"
+  // range that extends past the highest tenant) is excluded from the
+  // missing-spans bookkeeping that CloneData would never satisfy.
+  Span scope = 2 [(gogoproto.nullable) = false];
 }
 
 // InternalCommitTrigger encapsulates all of the internal-only commit triggers.

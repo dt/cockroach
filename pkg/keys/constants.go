@@ -80,6 +80,21 @@ var (
 	// LocalRangeAppliedStateSuffix is the suffix for the range applied state
 	// key.
 	LocalRangeAppliedStateSuffix = []byte("rask")
+	// LocalRangeMissingSpansSuffix is the suffix for a range's missing-spans
+	// state, used during a cluster-fork CloneData flow. While the range's
+	// InconsistentReplicas bit is set, the missing-spans key holds the set of
+	// sub-spans of the range that have not yet been written by a CloneData
+	// apply on this store. Initialized to the full range span when the bit is
+	// set, decremented by each CloneData apply that intersects the range, and
+	// consulted at unlock time to verify the clone covered the full range
+	// before the bit is cleared.
+	//
+	// Lives in the replicated range-id-local namespace so its value is
+	// included in raft snapshots — a replica catching up via snapshot from a
+	// complete sender (missing-spans = empty) inherits completeness; one
+	// catching up from an incomplete sender inherits the truthful
+	// incompleteness.
+	LocalRangeMissingSpansSuffix = []byte("rmsp")
 	// LocalRangeForceFlushSuffix is the suffix for the range force flush key.
 	LocalRangeForceFlushSuffix = []byte("rffk")
 	// This was previously used for the replicated RaftTruncatedState. It is no

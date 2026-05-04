@@ -51,8 +51,8 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 	ctx, sp := tracing.ChildSpan(ctx, "clusterfork.ForkTenant")
 	defer sp.Finish()
 
-	srcPrefix := roachpb.Key(keys.MakeTenantPrefix(src))
-	dstPrefix := roachpb.Key(keys.MakeTenantPrefix(dst))
+	srcPrefix := keys.MakeTenantPrefix(src)
+	dstPrefix := keys.MakeTenantPrefix(dst)
 	srcSpan := roachpb.Span{Key: srcPrefix, EndKey: srcPrefix.PrefixEnd()}
 	dstSpan := roachpb.Span{Key: dstPrefix, EndKey: dstPrefix.PrefixEnd()}
 
@@ -78,7 +78,13 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 	// the tenant prefix.
 	if err := step("lock-dst-parent", func(ctx context.Context) error {
 		expiresAt := db.Clock().Now().Add(defaultLeaseDuration.Nanoseconds(), 0)
-		return setReplicaInconsistency(ctx, db, dstPrefix, expiresAt, false /* ackAborted */)
+		// Scope the missing-spans init to the destination tenant span so
+		// out-of-tenant keyspace the parent range may cover (e.g. the
+		// open-ended right-neighbor range that extends past the highest
+		// tenant) is excluded from what unlock-time completeness must
+		// satisfy. CloneData will only fill the in-tenant portion.
+		return setReplicaInconsistency(ctx, db, dstPrefix, expiresAt,
+			false /* ackAborted */, dstSpan)
 	}); err != nil {
 		return errors.Wrap(err, "lock destination parent range")
 	}
@@ -200,7 +206,8 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 			if bytes.Compare(startKey, dstSpan.Key) < 0 {
 				startKey = dstSpan.Key
 			}
-			if err := setReplicaInconsistency(ctx, db, startKey, hlc.Timestamp{}, false /* ackAborted */); err != nil {
+			if err := setReplicaInconsistency(ctx, db, startKey, hlc.Timestamp{},
+				false /* ackAborted */, roachpb.Span{}); err != nil {
 				return errors.Wrapf(err, "unlock destination range starting at %s", startKey)
 			}
 		}
@@ -308,13 +315,23 @@ func scanRangeDescriptors(
 // setReplicaInconsistency issues an AdminSetReplicaInconsistency at the
 // given range's start key. untilTS is the new value: zero unlocks,
 // non-zero locks. ackAborted=true accepts a pre-existing aborted state.
+// scope is the keyspace the caller intends to clone into the locked
+// range; it bounds the missing-spans bookkeeping the unlock-time
+// completeness check consumes. Empty (zero-valued) scope means "the
+// entire range" (back-compat).
 func setReplicaInconsistency(
-	ctx context.Context, db *kv.DB, key roachpb.Key, untilTS hlc.Timestamp, ackAborted bool,
+	ctx context.Context,
+	db *kv.DB,
+	key roachpb.Key,
+	untilTS hlc.Timestamp,
+	ackAborted bool,
+	scope roachpb.Span,
 ) error {
 	req := &kvpb.AdminSetReplicaInconsistencyRequest{
 		RequestHeader: kvpb.RequestHeader{Key: key},
 		UntilTS:       untilTS,
 		AckAborted:    ackAborted,
+		Scope:         scope,
 	}
 	b := &kv.Batch{}
 	b.AddRawRequest(req)

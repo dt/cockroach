@@ -2267,6 +2267,15 @@ message AdminSetReplicaInconsistencyRequest {
   // discover (via the failure) that its lease was cleared by KV's
   // deadman, and to subsequently acknowledge that state.
   bool ack_aborted = 3;
+
+  // Scope is the keyspace the caller intends to clone into this range.
+  // Only meaningful for lock requests (UntilTS != 0). If set, the
+  // initialized missing-spans state on this range is restricted to the
+  // intersection of Scope and the range's RSpan, so the unlock-time
+  // completeness check ignores out-of-scope keyspace the parent range
+  // may happen to cover (e.g. the open-ended right-neighbor range that
+  // extends past the highest tenant boundary).
+  Span scope = 4 [(gogoproto.nullable) = false];
 }
 
 // AdminSetReplicaInconsistencyResponse is the response to an

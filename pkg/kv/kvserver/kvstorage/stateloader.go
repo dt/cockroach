@@ -190,6 +190,40 @@ func (s StateLoader) LoadRangeAppliedState(
 	return &as, err
 }
 
+// LoadRangeMissingSpans loads the range's missing-spans state, used by the
+// cluster-fork CloneData flow. Returns an empty struct (no missing spans) if
+// the key is not present, which is the normal state for any range that is not
+// currently mid-clone.
+func (s StateLoader) LoadRangeMissingSpans(
+	ctx context.Context, stateRO StateRO,
+) (kvserverpb.RangeMissingSpans, error) {
+	var ms kvserverpb.RangeMissingSpans
+	_, err := storage.MVCCGetProto(ctx, stateRO, s.RangeMissingSpansKey(), hlc.Timestamp{}, &ms,
+		storage.MVCCGetOptions{})
+	return ms, err
+}
+
+// SetRangeMissingSpans overwrites the range's missing-spans state. An empty
+// `ms.Spans` records "this range is complete"; the unlock path uses this
+// state to verify a clone covered the whole range before clearing
+// InconsistentReplicas.
+func (s StateLoader) SetRangeMissingSpans(
+	ctx context.Context, stateRW StateRW, ms kvserverpb.RangeMissingSpans,
+) error {
+	return storage.MVCCPutProto(ctx, stateRW, s.RangeMissingSpansKey(),
+		hlc.Timestamp{}, &ms,
+		storage.MVCCWriteOptions{Stats: nil, Category: fs.ReplicationReadCategory})
+}
+
+// ClearRangeMissingSpans removes the range's missing-spans key from storage.
+// Called when InconsistentReplicas is being cleared so a subsequent fork
+// starts fresh.
+func (s StateLoader) ClearRangeMissingSpans(ctx context.Context, stateRW StateRW) error {
+	_, _, err := storage.MVCCDelete(ctx, stateRW, s.RangeMissingSpansKey(),
+		hlc.Timestamp{}, storage.MVCCWriteOptions{})
+	return err
+}
+
 // LoadMVCCStats loads the MVCC stats.
 func (s StateLoader) LoadMVCCStats(
 	ctx context.Context, stateRO StateRO,

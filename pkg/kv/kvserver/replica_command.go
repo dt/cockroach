@@ -755,6 +755,7 @@ func (r *Replica) adminSetReplicaInconsistencyWithDescriptor(
 			InternalCommitTrigger: &roachpb.InternalCommitTrigger{
 				InconsistentReplicasTrigger: &roachpb.InconsistentReplicasTrigger{
 					InconsistentReplicas: desired,
+					Scope:                args.Scope,
 				},
 			},
 		})

@@ -293,3 +293,27 @@ message MVCCPersistentStats {
   int64 abort_span_bytes = 15;
 }
 
+// RangeMissingSpans is the persisted value at keys.RangeMissingSpansKey. It
+// records the sub-spans of a range whose data has not yet been written by a
+// CloneData apply on this store, used by the cluster-fork flow to verify
+// that the clone covered the full range before clearing the range's
+// InconsistentReplicas bit.
+//
+// Lifecycle:
+//   - Initialized to [range span] when the InconsistencyLeaseTrigger sets
+//     InconsistentReplicas from empty to non-empty.
+//   - Subtracted by each CloneData apply hook on the local store when a
+//     cloned span intersects this range.
+//   - Read at unlock time (the InconsistencyLeaseTrigger clearing the bit)
+//     to verify the range is complete; if any spans remain, unlock is
+//     refused so the orchestration can repair (e.g. by replacing the
+//     incomplete replica via ChangeReplicas, whose snapshot will inherit
+//     the complete state from a sibling).
+//   - Cleared when the bit is cleared (so a subsequent fork starts fresh).
+message RangeMissingSpans {
+  // Spans is the set of sub-spans of the range that still need a
+  // CloneData apply. Empty means the range is complete. Spans are
+  // disjoint and sorted by start key by convention.
+  repeated roachpb.Span spans = 1 [(gogoproto.nullable) = false];
+}
+

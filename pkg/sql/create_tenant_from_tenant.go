@@ -105,7 +105,7 @@ func (n *createTenantFromTenantNode) startExec(params runParams) error {
 	}
 	tenantInfo := &mtinfopb.TenantInfoWithUsage{
 		SQLInfo: mtinfopb.SQLInfo{
-			Name:      roachpb.TenantName(dstName),
+			Name:      dstName,
 			DataState: mtinfopb.DataStateAdd,
 		},
 	}

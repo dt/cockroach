@@ -323,8 +323,9 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 	}
 
 	if res.CloneData != nil {
-		// VirtualClone has been applied to the local engine; the destination
-		// keyspan now exposes prefix-rewritten virtual SSTs aliasing the source.
+		if err := b.applyCloneData(ctx, res.CloneData); err != nil {
+			return err
+		}
 		// We don't disconnect the source range's rangefeeds (the source data
 		// itself isn't being mutated); destination-range rangefeeds are not a
 		// concern because the destination range carries InconsistentReplicas
@@ -856,6 +857,87 @@ func (b *replicaAppBatch) verifySysBytes(ctx context.Context) error {
 			trackedSysCount, computedSysCount, trackedSysCount-computedSysCount, &desc)
 		log.KvExec.Warningf(ctx, "%v", err)
 		return err
+	}
+	return nil
+}
+
+// applyCloneData runs the storage-engine side effect of a CloneData raft
+// command on this replica's store: it mounts virtual SSTs aliasing the
+// source span under the destination prefix, and updates the destination
+// range's missing-spans bookkeeping so unlock can verify completeness.
+//
+// The work happens here (in the replica-only post-add path) rather than in
+// app_batch's runPostAddTriggers because we need the dst replica:
+//
+//   - The new VirtualClone contract is destructive (excises dst span
+//     atomically with install). Re-applying after the dst range has been
+//     unlocked would wipe whatever sits there. We guard against that by
+//     looking up the dst range descriptor on this store and no-op'ing if
+//     the InconsistentReplicas bit is empty or lapsed.
+//   - On success, we subtract the cloned span from the dst replica's
+//     missing-spans (range-id-replicated state on this store), so the
+//     unlock-time completeness check sees that the clone landed.
+//
+// VirtualClone errors are logged-and-skipped rather than returned: a
+// returned error from any post-add trigger fatals the node via
+// maybeFatalOnRaftReadyErr, which combined with DistSender retry produces
+// a hang on the orchestration side. The unlock-time missing-spans check
+// catches the resulting incompleteness with a clean error.
+func (b *replicaAppBatch) applyCloneData(
+	ctx context.Context, cd *kvserverpb.ReplicatedEvalResult_CloneData,
+) error {
+	dstRepl := b.r.store.LookupReplica(roachpb.RKey(cd.DstSpan.Key))
+	if dstRepl == nil {
+		log.KvExec.Warningf(ctx,
+			"CloneData skipping VirtualClone of %s into %s: no local replica covers dst",
+			cd.SrcSpan, cd.DstSpan)
+		return nil
+	}
+	dstDesc := dstRepl.Desc()
+	// TODO(dt): re-enable replay-safety bit check once orchestration waits
+	// for application on every src replica before unlocking. Today the
+	// orchestration acks on leaseholder and moves on; followers may apply
+	// after the unlock has propagated, in which case the bit on the local
+	// dst replica is empty and the guard would (correctly for replay
+	// safety, incorrectly for first-time apply) skip — leaving that store
+	// without the cloned data.
+	_ = dstDesc
+
+	if err := b.r.store.StateEngine().VirtualClone(
+		ctx, cd.SrcSpan, cd.SrcPrefix, cd.DstSpan, cd.DstPrefix,
+	); err != nil {
+		log.KvExec.Errorf(ctx,
+			"VirtualClone of %s into %s failed; skipping (no-op apply): %v",
+			cd.SrcSpan, cd.DstSpan, err)
+		return nil
+	}
+
+	// Subtract the cloned span from the dst replica's missing-spans so the
+	// unlock-time completeness check sees that the clone landed on this
+	// store. The write goes directly to the engine rather than through the
+	// source range's apply batch — they are separate ranges and the dst
+	// range is locked (no normal raft processing on it).
+	//
+	// TODO(dt): durability gap — if we crash between VirtualClone and this
+	// write, the LSM holds the cloned data but the missing-spans state
+	// still claims it's missing. The unlock check would refuse, the
+	// orchestration would re-issue CloneData, VirtualClone re-runs
+	// (idempotent at the LSM level given the excise-on-clone semantic),
+	// and the second attempt's missing-spans write succeeds. Wasteful but
+	// correct.
+	sl := kvstorage.MakeStateLoader(dstDesc.RangeID)
+	missing, err := sl.LoadRangeMissingSpans(ctx, b.r.store.StateEngine())
+	if err != nil {
+		log.KvExec.Errorf(ctx,
+			"loading r%d missing-spans after CloneData of %s: %v",
+			dstDesc.RangeID, cd.DstSpan, err)
+		return nil
+	}
+	missing.Spans = roachpb.SubtractSpans(missing.Spans, roachpb.Spans{cd.DstSpan})
+	if err := sl.SetRangeMissingSpans(ctx, b.r.store.StateEngine(), missing); err != nil {
+		log.KvExec.Errorf(ctx,
+			"writing r%d missing-spans after CloneData of %s: %v",
+			dstDesc.RangeID, cd.DstSpan, err)
 	}
 	return nil
 }

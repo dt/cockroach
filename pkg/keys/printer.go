@@ -110,6 +110,7 @@ var (
 		{name: "RangeTombstone", suffix: LocalRangeTombstoneSuffix},
 		{name: "RaftHardState", suffix: LocalRaftHardStateSuffix},
 		{name: "RangeAppliedState", suffix: LocalRangeAppliedStateSuffix},
+		{name: "RangeMissingSpans", suffix: LocalRangeMissingSpansSuffix},
 		{name: "RaftLog", suffix: LocalRaftLogSuffix,
 			ppFunc: raftLogKeyPrint,
 			psFunc: raftLogKeyParse,
