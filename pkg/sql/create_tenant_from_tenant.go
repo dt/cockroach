@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/zoneconfig"
-	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/errors"
 )
 
@@ -131,10 +130,11 @@ func (n *createTenantFromTenantNode) startExec(params runParams) error {
 			"freshly allocated destination tenant %d collides with source", dstID)
 	}
 
-	// Fork. We use the planner's read timestamp as the fork point — the
-	// source data is consistent at that time, and the planner already
-	// holds it for snapshot isolation.
-	t := hlc.Timestamp{WallTime: params.EvalContext().GetStmtTimestamp().UnixNano()}
+	// Use the HLC clock rather than wall-clock-derived stmtTimestamp:
+	// the seed writes on the source tenant get HLC-issued timestamps
+	// that can be ahead of any single node's wall clock, so a wall-clock
+	// T may sit BELOW data we'd revert against.
+	t := p.execCfg.Clock.Now()
 	if err := clusterfork.ForkTenant(ctx, p.execCfg.DB, srcID, dstID, t); err != nil {
 		return errors.Wrapf(err, "forking %d -> %d", srcID, dstID)
 	}
