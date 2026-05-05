@@ -1,9 +1,9 @@
 load("@io_bazel_rules_go//go:def.bzl", "go_library")
 
 go_library(
-    name = "cliccl",
+    name = "fixturescmd",
     srcs = ["fixtures.go"],
-    importpath = "github.com/cockroachdb/cockroach/pkg/ccl/workloadccl/cliccl",
+    importpath = "github.com/cockroachdb/cockroach/pkg/workload/cli/fixturescmd",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/util/log",

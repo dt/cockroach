@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package cliccl
+package fixturescmd
 
 import (
 	"context"
@@ -63,11 +63,11 @@ var fixturesMakeCmd = workloadcli.SetCmdDefaults(&cobra.Command{
 })
 var fixturesLoadCmd = workloadcli.SetCmdDefaults(&cobra.Command{
 	Use:   `load`,
-	Short: `load a fixture into a running cluster. An enterprise license is required.`,
+	Short: `load a fixture into a running cluster via RESTORE`,
 })
 var fixturesImportCmd = workloadcli.SetCmdDefaults(&cobra.Command{
 	Use:   `import`,
-	Short: `import a fixture into a running cluster. An enterprise license is NOT required.`,
+	Short: `import a fixture into a running cluster via IMPORT`,
 })
 var fixturesURLCmd = workloadcli.SetCmdDefaults(&cobra.Command{
 	Use:   `url`,

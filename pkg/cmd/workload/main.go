@@ -9,8 +9,8 @@ import (
 	"os"
 
 	_ "github.com/cockroachdb/cockroach/pkg/ccl/workloadccl/allccl" // init hooks
-	_ "github.com/cockroachdb/cockroach/pkg/ccl/workloadccl/cliccl" // init hooks
 	workloadcli "github.com/cockroachdb/cockroach/pkg/workload/cli"
+	_ "github.com/cockroachdb/cockroach/pkg/workload/cli/fixturescmd" // registers fixtures command
 )
 
 func main() {
