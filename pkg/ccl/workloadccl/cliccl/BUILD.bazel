@@ -6,11 +6,11 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/ccl/workloadccl/cliccl",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/ccl/workloadccl",
         "//pkg/util/log",
         "//pkg/util/timeutil",
         "//pkg/workload",
         "//pkg/workload/cli",
+        "//pkg/workload/fixture",
         "//pkg/workload/workloadsql",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_spf13_cobra//:cobra",

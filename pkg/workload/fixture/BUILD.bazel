@@ -1,12 +1,12 @@
 load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
-    name = "workloadccl",
+    name = "fixture",
     srcs = [
         "fixture.go",
         "storage.go",
     ],
-    importpath = "github.com/cockroachdb/cockroach/pkg/ccl/workloadccl",
+    importpath = "github.com/cockroachdb/cockroach/pkg/workload/fixture",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/base",
@@ -29,8 +29,8 @@ go_library(
 )
 
 go_test(
-    name = "workloadccl_test",
-    size = "small",
+    name = "fixture_test",
+    size = "large",
     srcs = [
         "bench_test.go",
         "fixture_test.go",
@@ -41,9 +41,10 @@ go_test(
         "//conditions:default": {"test.Pool": "default"},
     }),
     deps = [
-        ":workloadccl",
+        ":fixture",
+        "//pkg/backup",
         "//pkg/base",
-        "//pkg/ccl",
+        "//pkg/cloud/impl:cloudimpl",
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",
         "//pkg/server",

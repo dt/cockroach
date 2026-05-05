@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package workloadccl
+package fixture
 
 import (
 	"bytes"
@@ -35,8 +35,8 @@ func init() {
 	workload.ImportDataLoader = ImportDataLoader{}
 }
 
-// FixtureConfig describes a storage place for fixtures.
-type FixtureConfig struct {
+// Config describes a storage place for fixtures.
+type Config struct {
 	// StorageProvider specifies the name of storage provider as supported by cloud
 	// storage.  Default "gs" (other providers include "s3", and "azure").
 	StorageProvider string
@@ -65,7 +65,7 @@ type FixtureConfig struct {
 }
 
 // ObjectPathToURI returns URI for the optional folder path components.
-func (s FixtureConfig) ObjectPathToURI(folders ...string) string {
+func (s Config) ObjectPathToURI(folders ...string) string {
 	path := filepath.Join(folders...)
 	return fmt.Sprintf("%s://%s/%s/%s?%s", s.StorageProvider, s.Bucket, s.Basename, path, s.AuthParams)
 }
@@ -73,14 +73,14 @@ func (s FixtureConfig) ObjectPathToURI(folders ...string) string {
 // Fixture describes pre-computed data for a Generator, allowing quick
 // initialization of large clusters.
 type Fixture struct {
-	Config    FixtureConfig
+	Config    Config
 	Generator workload.Generator
-	Tables    []FixtureTable
+	Tables    []Table
 }
 
-// FixtureTable describes pre-computed data for a single table in a Generator,
+// Table describes pre-computed data for a single table in a Generator,
 // allowing quick initializaiton of large clusters.
-type FixtureTable struct {
+type Table struct {
 	TableName string
 	BackupURI string
 }
@@ -114,15 +114,15 @@ func generatorToStorageFolder(gen workload.Generator) string {
 		fmt.Sprintf(`version=%s,%s`, meta.Version, serializeOptions(gen)))
 }
 
-// FixtureURL returns the URL for pre-computed Generator data stored in the cloud.
-func FixtureURL(config FixtureConfig, gen workload.Generator) string {
+// URL returns the URL for pre-computed Generator data stored in the cloud.
+func URL(config Config, gen workload.Generator) string {
 	return config.ObjectPathToURI(generatorToStorageFolder(gen))
 }
 
-// GetFixture returns a handle for pre-computed Generator data stored in the cloud. It
+// Get returns a handle for pre-computed Generator data stored in the cloud. It
 // is expected that the generator will have had Configure called on it.
-func GetFixture(
-	ctx context.Context, es cloud.ExternalStorage, config FixtureConfig, gen workload.Generator,
+func Get(
+	ctx context.Context, es cloud.ExternalStorage, config Config, gen workload.Generator,
 ) (Fixture, error) {
 	var fixture Fixture
 	fixtureFolder := generatorToStorageFolder(gen)
@@ -142,7 +142,7 @@ func GetFixture(
 				"expected non zero files for table %q in fixture folder %q", table.Name, tableFolder)
 		}
 
-		fixture.Tables = append(fixture.Tables, FixtureTable{
+		fixture.Tables = append(fixture.Tables, Table{
 			TableName: table.Name,
 			BackupURI: config.ObjectPathToURI(tableFolder),
 		})
@@ -205,7 +205,7 @@ func csvServerPaths(
 	return paths
 }
 
-// MakeFixture regenerates a fixture, storing it to GCS. It is expected that the
+// Make regenerates a fixture, storing it to GCS. It is expected that the
 // generator will have had Configure called on it.
 //
 // There's some ideal world in which we can generate backups (and thus
@@ -214,11 +214,11 @@ func csvServerPaths(
 // ... CSV DATA` works by turning a set of CSV files for a single table into a
 // backup file, then restoring that file into a cluster. The `transform` option
 // gives us only the first half (which is all we want for fixture generation).
-func MakeFixture(
+func Make(
 	ctx context.Context,
 	sqlDB *gosql.DB,
 	es cloud.ExternalStorage,
-	config FixtureConfig,
+	config Config,
 	gen workload.Generator,
 	filesPerNode int,
 ) (Fixture, error) {
@@ -231,7 +231,7 @@ func MakeFixture(
 	}
 
 	fixtureFolder := generatorToStorageFolder(gen)
-	if _, err := GetFixture(ctx, es, config, gen); err == nil {
+	if _, err := Get(ctx, es, config, gen); err == nil {
 		return Fixture{}, errors.Errorf(
 			`fixture %s already exists`, config.ObjectPathToURI(fixtureFolder))
 	}
@@ -291,7 +291,7 @@ func MakeFixture(
 		return Fixture{}, err
 	}
 
-	return GetFixture(ctx, es, config, gen)
+	return Get(ctx, es, config, gen)
 }
 
 // ImportDataLoader is an InitialDataLoader implementation that loads data with
@@ -319,7 +319,7 @@ func (l ImportDataLoader) InitialDataLoad(
 
 	log.Dev.Infof(ctx, "starting import of %d tables", len(gen.Tables()))
 	start := timeutil.Now()
-	bytes, err := ImportFixture(
+	bytes, err := Import(
 		ctx, db, gen, l.dbName, l.FilesPerNode, l.InjectStats, l.CSVServer)
 	if err != nil {
 		return 0, errors.Wrap(err, `importing fixture`)
@@ -348,11 +348,11 @@ func getNodeCount(ctx context.Context, sqlDB *gosql.DB) (int, error) {
 	return numNodes, nil
 }
 
-// ImportFixture works like MakeFixture, but instead of stopping halfway or
+// Import works like Make, but instead of stopping halfway or
 // writing a backup to cloud storage, it finishes ingesting the data.
 // It also includes the option to inject pre-calculated table statistics if
 // injectStats is true.
-func ImportFixture(
+func Import(
 	ctx context.Context,
 	sqlDB *gosql.DB,
 	gen workload.Generator,
@@ -620,9 +620,8 @@ func makeQualifiedTableName(dbName string, table *workload.Table) string {
 	return fmt.Sprintf(`"%s"."%s"`, dbName, table.Name)
 }
 
-// RestoreFixture loads a fixture into a CockroachDB cluster. An enterprise
-// license is required to have been set in the cluster.
-func RestoreFixture(
+// Restore loads a fixture into a CockroachDB cluster.
+func Restore(
 	ctx context.Context, sqlDB *gosql.DB, fixture Fixture, database string, injectStats bool,
 ) error {
 	g := ctxgroup.WithContext(ctx)
@@ -700,10 +699,8 @@ func listDir(
 	return es.List(ctx, dir, cloud.ListOptions{Delimiter: "/"}, lsFn)
 }
 
-// ListFixtures returns the object paths to all fixtures stored in a FixtureConfig.
-func ListFixtures(
-	ctx context.Context, es cloud.ExternalStorage, config FixtureConfig,
-) ([]string, error) {
+// List returns the object paths to all fixtures stored in a Config.
+func List(ctx context.Context, es cloud.ExternalStorage, config Config) ([]string, error) {
 	var fixtures []string
 	for _, gen := range workload.Registered() {
 		if err := listDir(ctx, es, func(s string) error {

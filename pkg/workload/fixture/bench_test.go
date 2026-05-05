@@ -3,20 +3,20 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package workloadccl_test
+package fixture_test
 
 import (
 	"context"
 	"testing"
 
+	_ "github.com/cockroachdb/cockroach/pkg/backup"
 	"github.com/cockroachdb/cockroach/pkg/base"
-	_ "github.com/cockroachdb/cockroach/pkg/ccl"
-	"github.com/cockroachdb/cockroach/pkg/ccl/workloadccl"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/workload"
+	"github.com/cockroachdb/cockroach/pkg/workload/fixture"
 	"github.com/cockroachdb/cockroach/pkg/workload/tpcc"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +41,7 @@ func benchmarkImportFixture(b *testing.B, gen workload.Generator) {
 		b.StartTimer()
 		const filesPerNode = 1
 		const noInjectStats, csvServer = false, ``
-		importBytes, err := workloadccl.ImportFixture(
+		importBytes, err := fixture.Import(
 			ctx, db, gen, `d`, filesPerNode, noInjectStats, csvServer,
 		)
 		require.NoError(b, err)
