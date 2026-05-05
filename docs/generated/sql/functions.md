@@ -3753,6 +3753,8 @@ may increase either contention or retry errors, or both.</p>
 </span></td><td>Stable</td></tr>
 <tr><td><a name="pg_get_function_result"></a><code>pg_get_function_result(func_oid: oid) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Returns the types of the result of the specified function.</p>
 </span></td><td>Stable</td></tr>
+<tr><td><a name="pg_get_function_sqlbody"></a><code>pg_get_function_sqlbody(func_oid: oid) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Returns the SQL-standard body of the specified function, or NULL if the function was not defined with the SQL-standard inline body syntax.</p>
+</span></td><td>Stable</td></tr>
 <tr><td><a name="pg_get_functiondef"></a><code>pg_get_functiondef(func_oid: oid) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>For user-defined functions, returns the definition of the specified function. For builtin functions, returns the name of the function.</p>
 </span></td><td>Stable</td></tr>
 <tr><td><a name="pg_get_indexdef"></a><code>pg_get_indexdef(index_oid: oid) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Gets the CREATE INDEX command for index</p>

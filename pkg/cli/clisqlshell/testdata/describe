@@ -2200,7 +2200,7 @@ List of functions:
         pg_catalog.pg_get_userbyid(p.proowner) AS "Owner",
         CASE WHEN p.prosecdef THEN 'definer' ELSE 'invoker' END AS "Security",
        COALESCE(pg_catalog.array_to_string(p.proacl, e'\n'), '') AS "Access privileges",
-       p.prosrc AS "Source code",
+       COALESCE(p.prosrc, pg_catalog.pg_get_function_sqlbody(p.oid)) AS "Source code",
        pg_catalog.obj_description(p.oid, 'pg_proc') AS "Description"
      FROM pg_catalog.pg_proc p
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
@@ -2256,7 +2256,7 @@ List of functions:
         pg_catalog.pg_get_userbyid(p.proowner) AS "Owner",
         CASE WHEN p.prosecdef THEN 'definer' ELSE 'invoker' END AS "Security",
        COALESCE(pg_catalog.array_to_string(p.proacl, e'\n'), '') AS "Access privileges",
-       p.prosrc AS "Source code",
+       COALESCE(p.prosrc, pg_catalog.pg_get_function_sqlbody(p.oid)) AS "Source code",
        pg_catalog.obj_description(p.oid, 'pg_proc') AS "Description"
      FROM pg_catalog.pg_proc p
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
@@ -2311,7 +2311,7 @@ List of functions:
         pg_catalog.pg_get_userbyid(p.proowner) AS "Owner",
         CASE WHEN p.prosecdef THEN 'definer' ELSE 'invoker' END AS "Security",
        COALESCE(pg_catalog.array_to_string(p.proacl, e'\n'), '') AS "Access privileges",
-       p.prosrc AS "Source code",
+       COALESCE(p.prosrc, pg_catalog.pg_get_function_sqlbody(p.oid)) AS "Source code",
        pg_catalog.obj_description(p.oid, 'pg_proc') AS "Description"
      FROM pg_catalog.pg_proc p
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
@@ -2368,7 +2368,7 @@ List of functions:
         pg_catalog.pg_get_userbyid(p.proowner) AS "Owner",
         CASE WHEN p.prosecdef THEN 'definer' ELSE 'invoker' END AS "Security",
        COALESCE(pg_catalog.array_to_string(p.proacl, e'\n'), '') AS "Access privileges",
-       p.prosrc AS "Source code",
+       COALESCE(p.prosrc, pg_catalog.pg_get_function_sqlbody(p.oid)) AS "Source code",
        pg_catalog.obj_description(p.oid, 'pg_proc') AS "Description"
      FROM pg_catalog.pg_proc p
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
