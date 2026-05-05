@@ -1,9 +1,9 @@
 load("@io_bazel_rules_go//go:def.bzl", "go_library")
 
 go_library(
-    name = "roachmartccl",
+    name = "roachmart",
     srcs = ["roachmart.go"],
-    importpath = "github.com/cockroachdb/cockroach/pkg/ccl/workloadccl/roachmartccl",
+    importpath = "github.com/cockroachdb/cockroach/pkg/workload/roachmart",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/util/randutil",

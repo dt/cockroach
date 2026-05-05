@@ -6,7 +6,6 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/ccl/workloadccl/allccl",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/ccl/workloadccl/roachmartccl",
         "//pkg/workload/bank",
         "//pkg/workload/bulkingest",
         "//pkg/workload/conflict",
@@ -24,6 +23,7 @@ go_library(
         "//pkg/workload/querylog",
         "//pkg/workload/queue",
         "//pkg/workload/rand",
+        "//pkg/workload/roachmart",
         "//pkg/workload/schemachange",
         "//pkg/workload/sqlsmith",
         "//pkg/workload/sqlstats",

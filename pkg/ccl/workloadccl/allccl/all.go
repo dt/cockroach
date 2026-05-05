@@ -10,7 +10,6 @@ package allccl
 
 import (
 	// workloads
-	_ "github.com/cockroachdb/cockroach/pkg/ccl/workloadccl/roachmartccl"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/bank"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/bulkingest"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/conflict"
@@ -28,6 +27,7 @@ import (
 	_ "github.com/cockroachdb/cockroach/pkg/workload/querylog"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/queue"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/rand"
+	_ "github.com/cockroachdb/cockroach/pkg/workload/roachmart"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/schemachange"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/sqlsmith"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/sqlstats"
