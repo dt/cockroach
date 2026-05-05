@@ -1,9 +1,9 @@
 load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
-    name = "allccl",
+    name = "all",
     srcs = ["all.go"],
-    importpath = "github.com/cockroachdb/cockroach/pkg/ccl/workloadccl/allccl",
+    importpath = "github.com/cockroachdb/cockroach/pkg/workload/all",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/workload/bank",
@@ -41,17 +41,18 @@ go_library(
 )
 
 go_test(
-    name = "allccl_test",
+    name = "all_test",
     size = "large",
     srcs = [
         "all_test.go",
         "main_test.go",
     ],
-    embed = [":allccl"],
+    embed = [":all"],
     shard_count = 5,
     deps = [
+        "//pkg/backup",
         "//pkg/base",
-        "//pkg/ccl",
+        "//pkg/cloud/impl:cloudimpl",
         "//pkg/col/coldata",
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",

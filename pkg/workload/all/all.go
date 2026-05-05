@@ -3,10 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package allccl
-
-// We import each of the workloads below, so a single import of this package
-// enables registration of all workloads.
+// Package all aggregates blank imports of every workload generator so a
+// single import enables registration of all workloads.
+package all
 
 import (
 	// workloads
