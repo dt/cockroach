@@ -408,7 +408,7 @@ marker" with "needs eviction" or carrying markers in snapshots, both
 ugly. Inverting the polarity (track what's *missing*, propagate
 through snapshots naturally) sidesteps both hazards.
 
-### Snapshot-residue straddlers
+### Snapshot-residue straddlers — resolved on Pebble side
 
 `AdminRelocateRange` triggers raft snapshots to colocate destination
 replicas. Snapshot recv writes range tombstones over the recipient
@@ -419,24 +419,14 @@ those tombstones live on with their original wide bounds.
 
 When a subsequent `VirtualClone` operates on a source span that
 intersects (or is intersected by) one of these wide-bounded tombstones,
-Pebble hits unsupported cases:
+three shapes appear: (1) a source SST whose *file bounds* extend past
+srcSpan into dstSpan, (2) a source SST containing a range-tombstone
+*fragment* whose interval straddles srcSpan or dstSpan boundaries,
+(3) variations involving range-key deletes.
 
-1. A source SST whose *file bounds* extend past srcSpan into dstSpan.
-2. A source SST containing a range-tombstone *fragment* whose interval
-   straddles srcSpan or dstSpan boundaries.
-3. (Variations involving range-key deletes.)
-
-All three are functionally irrelevant to the clone (the tombstones are
-older than any data we care about), but Pebble's bounds-based
-preconditions trip on them. The right Pebble-side answer is to use
-the existing ingest-split / fragmenter machinery to split tombstones
-at the relevant boundaries before excising/cloning — see Appendix A.
-
-The alternative ("don't relocate dst replicas via raft snapshot — born
-on the right stores instead") is structurally cleaner but requires
-inventing a new mechanism for placing fresh empty replicas on specific
-stores at creation time. The Pebble-side fix is local and reuses
-existing primitives.
+All three are now handled on the Pebble side — see Appendix A "Cases
+A/B/C" for the resolutions. CRDB-side, no special handling needed:
+the snapshot residue passes through `VirtualClone` transparently.
 
 ### Smaller TODOs
 
@@ -516,11 +506,13 @@ inside the block iterator — the same architectural layer where
 //
 // Returns ErrUnsupportedClone (with details) for v1 unsupported cases:
 //   - rowblk-format SSTs intersecting srcSpan
-//   - source SSTs whose file bounds extend into dstSpan (case A
-//     below; needs ingest-split-style fix to lift)
-//   - source SSTs containing range-deletion or range-key fragments
-//     whose [Start, End) interval straddles a srcSpan boundary
-//     (case B below; needs keyspan-fragmenter-driven fix to lift)
+//   - a straddling source SST whose in-span data blocks have a stored
+//     shared prefix shorter than srcPrefix
+//   - a source SST containing a range-deletion or range-key fragment
+//     whose interval straddles a srcSpan boundary AND whose endpoints
+//     can't be cleanly truncated (rare; the common straddler case is
+//     handled by rewriteStraddlerFragments — see "Fragment rewrite"
+//     below)
 func (d *DB) VirtualClone(
     ctx context.Context,
     srcSpan KeyRange,
@@ -611,17 +603,79 @@ without that exclusivity the excise loses concurrent writes.
    straddles srcSpan, decode it once and write the in-span keys (with
    prefix substituted) into a small new physical SST.
 
+   The cloned virtual SST's `pointKeyBounds` cover *only* the data run
+   — they are deliberately not extended by in-span range-deletion /
+   range-key fragments. Wide rangedels (e.g. snapshot-recv residue)
+   would otherwise extend the virtual SST's bounds across the
+   boundary-rewrite physical SSTs from this same source, violating
+   the per-level no-overlap invariant. Fragments are materialized
+   separately — see "Fragment rewrite" below.
+
 3. **Straddling rowblk SST (pre-v5 format).** Error in v1
    (`ErrUnsupportedClone`). Rowblk has no per-block stored shared
    prefix.
 
-## Open issues from CRDB prototype
+4. **Source SST whose bounds extend into dstSpan.** Common after a
+   snapshot receive into a region neighboring an existing tenant: one
+   physical file holds both src-prefix and dst-prefix keys. Phase A
+   defers stand-in / `DeletedTables` / `CreatedBackingTables` for
+   such files to phase B's dst-excise loop. `exciseTable +
+   applyExciseToVersionEdit` trims the file at dstSpan boundaries via
+   a virtual `leftTable` over the same backing — that leftTable IS
+   the src-side stand-in, the deletion entry, and the backing
+   promotion in one. The src-side cloning path (data-block + fragment
+   rewrites) operates unchanged on the file's in-srcSpan content; the
+   dst-side portion gets excised away.
 
-The following cases are surfaced by real CRDB workloads (every fresh
-fork in a non-empty cluster will hit at least one of them) and need
-to be handled before the API is usable in production.
+5. **Source SST with no data blocks (rangedel-only).** Pebble's flush
+   may drop SETs obsoleted by a same-batch RANGEDEL with a higher
+   seqnum (a routine pattern when a `Set + DeleteRange` lands in one
+   batch — common for snapshot-recv tombstones). The straddler path
+   detects `len(blocks) == 0`, skips data-block analysis, and goes
+   directly to fragment rewrite.
 
-### Case A: source SST file bounds extend into dstSpan
+## Fragment rewrite (range deletions and range keys)
+
+For each straddling source SST that contains in-span rangedel or
+range-key fragments, `rewriteStraddlerFragments`:
+
+1. Walks the source's rangedel and rangekey blocks via
+   `NewRawRangeDelIter` / `NewRawRangeKeyIter` *without* substitution
+   (`NoFragmentTransforms`).
+2. For each fragment intersecting srcSpan, clips to
+   `srcSpan ∩ fragment` in src space and deep-copies each Key's
+   `Suffix` and `Value` (the underlying iterator reuses backing
+   buffers and, under invariants, mangles them between advances).
+3. Translates the clipped endpoints to dst space. Endpoints under
+   srcPrefix translate bytewise; an endpoint exactly equal to
+   `srcSpan.End` maps to `dstSpan.End` directly (the dst analog the
+   caller supplied — see "Why dstSpan is a parameter").
+4. Writes the translated fragments to a fresh physical SST via
+   `EncodeSpan`.
+
+The fragment-rewrite physical SST is placed at **L0**, not at the
+source level. A wide rangedel's truncated extent typically encompasses
+the data-run virtual SST and the boundary-rewrite physical SSTs from
+the same source; pebble forbids overlapping bounds at L1+, but L0's
+sublevel structure tolerates it. A `forceL0` flag on
+`clonePlanEntry` carries the placement asymmetry through the install
+path.
+
+This routes fragment iteration around the colblk substitution layer
+entirely. The cloned virtual SST has data-run-only bounds and no
+fragment bounds, so pebble's read path doesn't open the rangedel /
+rangekey block on the virtual SST — eliminating the
+`BlockPrefixSubstitution skip N exceeds stored shared prefix length`
+class of panic for wide-fragment cases. The substitution path's
+"endpoints must have srcPrefix" assumption is preserved, no colblk
+changes needed.
+
+## Resolved issues from CRDB prototype
+
+The following cases were surfaced by real CRDB workloads during the
+prototype and have been fixed on the `clone` branch.
+
+### Case A: source SST file bounds extend into dstSpan — resolved
 
 **Symptom:**
 
@@ -632,32 +686,23 @@ source table 000008 at L0 has bounds overlapping the dst excise span
 ```
 
 **Cause.** A source SST holds tombstones whose bounds straddle the
-src/dst tenant boundary. This is snapshot-recv residue: when an
-earlier raft snapshot was applied to a recipient range whose bounds
-covered both tenants (before later splits), `MultiSSTWriter.initSST`
-wrote a range-deletion fragment over the recipient's bounds.
+src/dst tenant boundary — snapshot-recv residue from when an earlier
+raft snapshot was applied to a recipient range whose bounds covered
+both tenants.
 
-**Why it matters.** Pebble's dst-excise wants to remove everything in
-dstSpan. The straddling source SST has bounds that overlap the
-excise region; excising it would also remove the src-side portion of
-the same physical file.
+**Fix.** Removed the phase-A pre-flight rejection. Phase B's existing
+`exciseTable + applyExciseToVersionEdit` already produces the
+`leftTable` virtual SST that serves as the src-side stand-in. The
+coordination required is making phase A *skip* the stand-in /
+DeletedTables / CreatedBackingTables work for any source SST whose
+bounds overlap dstSpan; phase B's dst-excise loop does all three for
+those files (and the leftTable IS the trimmed stand-in). No new
+ingestSplit invocation needed; the underlying primitive is the same
+one ingestSplit wraps.
 
-**Proposed fix.** Use existing `ingestSplit` machinery before the
-excise: walk every local SST whose bounds intersect dstSpan but
-extend outside it, and ingest-split at the dstSpan boundaries. After
-this, every overlapping SST is either entirely inside dstSpan
-(excisable) or entirely outside (untouched). Then dst-excise runs
-over a clean dstSpan; then source-side cloning proceeds with the
-existing boundary-block-rewrite for srcSpan straddlers (which file 8a
-above will still trigger, and is already handled).
+### Case B: range-tombstone fragments straddle srcSpan — resolved
 
-This reuses existing Pebble primitives: `ingestSplit` already exists
-for the symmetric problem ("an existing SST straddles an ingest's
-span") and is the same shape as what we need.
-
-### Case B: range-tombstone fragments straddle srcSpan
-
-**Symptom:**
+**Symptom (two flavors of the same root cause):**
 
 ```
 source table 000009 at L0 contains a range deletion fragment
@@ -665,71 +710,80 @@ source table 000009 at L0 contains a range deletion fragment
 [/Tenant/3/0,0, /Tenant/4/0,0)
 ```
 
-**Cause.** Same as case A — snapshot-recv residue — but the straddler
-is *inside* a source SST whose file bounds are otherwise clean. The
-file's range-tombstone fragment block contains a single fragment
-whose `[Start, End)` interval extends past srcSpan.
+```
+BlockPrefixSubstitution skip 2 exceeds stored shared prefix length 0
+```
 
-**Why it matters.** The boundary-block-rewrite path at the *file*
-level doesn't fire (the file's bounds are inside srcSpan), so the
-file gets virtually referenced. The keyspan iterator over the virtual
-file then walks the rangedel block expecting all fragments to share
-srcPrefix; the wide fragment doesn't, and the block-level
-`sharedPrefixLen` calculation comes out as 0 — confusing because
-the data-block straddler-rewrite path *guarantees* `sharedPrefixLen
->= len(srcPrefix)` for data blocks, but no such guarantee exists for
-keyspan blocks because that path doesn't have a corresponding
-straddler-rewrite step.
+**Cause.** Same family — snapshot-recv residue — but inside a source
+SST whose file bounds are otherwise clean. The rangedel block
+contains a fragment whose `[Start, End)` interval extends past
+srcSpan; both endpoints fall outside srcPrefix, and the colblk
+fragment iterator's substitution path has no representation for that.
+The first symptom comes from the prior straddler-fragment-rejection
+guard; the second symptom comes from removing that guard without
+also handling the substitution gap (the virtual SST's rangedel block
+gets opened and the colblk iter trips on a fragment whose stored
+shared prefix is 0 because the fragment endpoints diverge at byte 0).
 
-**Proposed fix.** Extend straddler-rewrite to cover range-tombstone
-and range-key blocks. For each fragment whose interval extends beyond
-srcSpan, truncate to the srcSpan intersection (the keyspan
-fragmenter — `rangedel.Fragmenter` / `rangekey.Fragmenter` — already
-supports truncation), then substitute the prefix on the (now in-srcSpan)
-endpoints, then emit into the rewritten boundary block.
+**Fix.** `rewriteStraddlerFragments` materializes the truncated
+fragment into a separate physical SST at L0 (see "Fragment rewrite"
+above). The cloned virtual SST's bounds no longer extend into
+fragment territory, so pebble's read path doesn't open the rangedel
+block on the virtual SST. Both symptoms go away with one fix.
 
-For our case the fragment `[/Table/80, /Max)` would be truncated to
-`[/Tenant/3, /Tenant/4)` (the srcSpan intersection), then prefix-
-substituted to `[/Tenant/4, /Tenant/5)` in the dst. Logically: the
-fragment is useless tombstone history; physically: it gets carried
-through with correct bounds.
+### Case C: range keys straddling srcSpan — resolved
 
-### Case C: range keys (any presence)
-
-`ErrUnsupportedClone` for any source SST that contains range keys
-straddling srcSpan boundaries. Same family as case B but for the
-range-key block instead of the range-tombstone block.
-
-**Proposed fix.** Same mechanism as case B, applied to range-key
-fragments via `rangekey.Fragmenter`.
+Same mechanism as case B; `rewriteStraddlerFragments` handles
+rangekeys and rangedels uniformly.
 
 ## Concurrency, atomicity, refcounting
 
-**Concurrency model: ingest-style.** All reads and boundary writes
-happen upfront without locks; a single `UpdateVersionLocked` callback
-re-snapshots, validates source backings still exist, and either
-applies or returns an error that triggers a full restart. Matches
-Pebble's `ingest.go` pattern. Single-VE atomicity, naturally
-serialized.
+**Two-phase model.** Each clone attempt splits into:
+
+- *Phase A — `buildClonePlan`.* Snapshot the LSM, walk source SSTs,
+  build the entry list (cloned virtuals, boundary-rewrite physicals,
+  fragment-rewrite physicals). Runs *without* the commit pipeline
+  semaphore. Test hooks fire here; concurrent `d.Set` / etc. work
+  normally.
+- *Phase B — `installClonePlanViaCommitPipeline`.* Allocate the
+  excise seqnum via `commit.AllocateSeqNum`. Prepare flushes
+  memtables overlapping srcSpan / dstSpan / EFOS-protected ranges.
+  Apply runs `installClonePlan` which re-validates against the live
+  version under `UpdateVersionLocked` and either installs the VE
+  (single edit: cloned entries + dst-span excise) or aborts (signals
+  "retry phase A").
+
+The split is required, not stylistic. Earlier attempts ran build
+inside apply, which holds `commitQueueSem`; any concurrent operation
+routed through the commit pipeline (test hooks, real workload writes,
+ingestion) deadlocks waiting for the sem the in-flight clone holds.
+The published apply path can't safely call `d.Set` / `d.Apply`.
+
+**Abort-on-flush.** Because phase A's snapshot is taken before phase
+B's prepare-time flush, any in-flight memtable contents that overlap
+srcSpan / dstSpan / EFOS bounds are not in the snapshot. After
+prepare flushes, apply aborts (rather than installing a stale plan);
+the next attempt's phase A re-snapshots the post-flush LSM and picks
+up the freshly-flushed L0 SSTs. Bounded by `virtualCloneMaxRetries`
+(typically one extra retry per call).
 
 **TableBacking refcounting.** Multiple virtual SSTs (one per source
-file) share a backing. Refcounting must happen *inside*
+file) share a backing. Refcounting happens *inside*
 `UpdateVersionLocked` to avoid racing with concurrent compaction
-`Unref`. Reuse the existing `AttachVirtualBacking` flow used by
+`Unref`. Reuses the existing `AttachVirtualBacking` flow used by
 excise.
 
-**Crash recovery for pre-VE boundary rewrites.** Boundary-block SSTs
-are written to the object provider before the VE applies. On crash
-they become orphans. Track them in the obsolete-file set if the VE
-never applies (or rely on `pebble.checkConsistency`-style orphan
-detection at startup — same flow ingest already uses for its own pre-
-VE physical SST writes).
+**Crash recovery for pre-VE rewrites.** Boundary-block and
+fragment-rewrite physical SSTs are written to the object provider
+before the VE applies. On crash they become orphans. Pebble's
+`checkConsistency` startup pass detects and removes them, the same
+flow ingest uses for its own pre-VE physical SST writes.
 
 **EFOS interaction.** If an `EventuallyFileOnlySnapshot` covers
-srcSpan or dstSpan at clone time, the dst-excise path needs to
-register with `ongoingExcises` so a concurrent EFOS that subsequently
-acquires `DB.mu` observes a `visibleSeqNum` strictly past the excise
-(preserving its pre-excise view). This mirrors the existing excise
+srcSpan or dstSpan at clone time, the dst-excise path registers with
+`ongoingExcises` so a concurrent EFOS that subsequently acquires
+`DB.mu` observes a `visibleSeqNum` strictly past the excise
+(preserving its pre-excise view). Mirrors the existing excise
 pattern.
 
 ## Bound-translation site checklist
@@ -748,7 +802,7 @@ needs a parallel "strip `Dst`, prepend `Src`" branch via
 | Bloom filter probe | `sstable/reader_iter_single_lvl.go` | **Required v1, critical** (silent-wrong-data risk if missed) |
 | Block-property filter | `sstable/block_property.go` | Required v1 (or disable on substituted virtual SSTs in v1) |
 | Virtual reader bounds | `sstable/virtual/virtual_reader_params.go` (`ConstrainBounds`) | Required v1 |
-| Range-key keyspan paths | `sstable/colblk/keyspan.go` | **Required for case B/C above** |
+| Range-key keyspan paths | `sstable/colblk/keyspan.go` | **Not modified.** Straddling fragments are routed around the colblk substitution layer entirely via `rewriteStraddlerFragments` (see "Fragment rewrite"). The substitution path's "endpoints must have srcPrefix" assumption is preserved. Future work could revisit this as an optimization (avoid the small physical SST per straddler) by extending colblk to handle synthetic boundary endpoints, but it isn't required for correctness. |
 | Two-level iterator | `sstable/reader_iter_two_lvl.go` | Required v1 |
 | Rowblk readers | `sstable/rowblk/...` | Out of scope (v1 errors on rowblk straddlers) |
 
@@ -807,6 +861,21 @@ CRDB-realistic LSM fixture (lessons from prototype):
     LSMs).
 13. **Prefixes passed in literal byte-prefix form** a real caller
     would build (raw tenant prefix, not engine-key-encoded).
+14. **Source SST whose bounds straddle src and dst prefixes**
+    (`TestVirtualClone_SourceStraddlesDstSpan`). Exercises Case A's
+    deferred-stand-in path: phase A skips stand-in for the file,
+    phase B's dst-excise produces the leftTable.
+15. **Straddling rangedel and straddling rangekey**
+    (`TestVirtualClone_RangeDel_Straddling`,
+     `TestVirtualClone_RangeKey_Straddling`). Exercises
+     `rewriteStraddlerFragments`: assert the truncated fragment is
+     visible in dst (covers the cloned point keys, doesn't bleed past
+     dstSpan.End into adjacent regions) and the source-side fragment
+     is unchanged.
+16. **Source SST with no data blocks (rangedel-only).** Exercises
+    case 5 of decomposition: `Set + DeleteRange` in one batch +
+    flush, then clone. The straddler path skips data-block analysis
+    and goes directly to fragment rewrite.
 
 Concurrency / correctness:
 
@@ -845,9 +914,10 @@ preserving as cautionary notes:
   range tombstones over the recipient range's *current* bounds; after
   later splits those tombstones live on with their original wider
   bounds, intersecting boundaries the new layout doesn't have. Pebble
-  needs to handle this (Appendix A cases A/B/C); CRDB can't avoid it
-  without inventing a new "born on the right stores" replica
-  placement primitive.
+  now handles all three shapes (Appendix A cases A/B/C); CRDB-side
+  no workaround needed. The alternative of "born on the right stores"
+  replica placement remains structurally cleaner long-term but is no
+  longer required for cluster-fork to work.
 - **Apply-time errors are unconditionally fatal.** `runPostAddTriggers`
   returning a non-nil error → `maybeFatalOnRaftReadyErr` → node
   panic. There is no clean "this command can't apply, tell the
