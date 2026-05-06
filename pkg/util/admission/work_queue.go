@@ -321,13 +321,13 @@ type WorkQueue struct {
 		// 1 vs rg 1) does not collide on a single container.
 		// Periodically GC'd by gcGroupsResetUsedAndUpdateEstimators.
 		groups map[groupKey]*groupInfo
-		// maxCPUGroups maps resource group ID to whether that group always
-		// qualifies for burst (MAX_CPU). IDs are interpreted as resource group
-		// IDs (rgKind); the lookup in getMaxCPULocked short-circuits for
-		// tenant-keyed containers so a numerically equal tenant ID can never
-		// inherit the flag. Only used if mode == usesCPUTimeTokens and
-		// admission.cpu_time_tokens.mode == "resource_manager".
-		maxCPUGroups map[uint64]bool
+		// maxCPUGroups maps a resource-group container key to whether that
+		// group always qualifies for burst (MAX_CPU). Keys are constructed
+		// via rgGroupKey when SetMaxCPUGroups runs, so a numerically equal
+		// tenant-keyed container can never collide on a lookup. Only used
+		// if mode == usesCPUTimeTokens and admission.cpu_time_tokens.mode
+		// == "resource_manager".
+		maxCPUGroups map[groupKey]bool
 
 		// useResourceGroup, when true, derives the resource group ID from
 		// WorkInfo.Priority instead of WorkInfo.TenantID. Used in Resource
@@ -1546,30 +1546,28 @@ func (q *WorkQueue) getGroupWeightLocked(_ groupKey) uint32 {
 }
 
 // getMaxCPULocked returns the maxCPU flag for the given group.
-// Returns false if the ID is not in maxCPUGroups, or if gKey is
-// tenant-keyed: maxCPUGroups is populated with RG IDs, so the
-// kind guard prevents a numerically equal tenant ID from inheriting
-// the flag. See cpuTimeBurstBucket for how this flag affects burst
-// qualification.
+// Returns false if gKey is not in maxCPUGroups. Tenant-keyed
+// containers are naturally excluded because maxCPUGroups is keyed
+// by rgGroupKey (see SetMaxCPUGroups). See cpuTimeBurstBucket for
+// how this flag affects burst qualification.
 //
 // REQUIRES: q.mu is held.
 func (q *WorkQueue) getMaxCPULocked(gKey groupKey) bool {
 	q.mu.AssertHeld()
-	if !gKey.isRg() {
-		return false
-	}
-	return q.mu.maxCPUGroups[gKey.id]
+	return q.mu.maxCPUGroups[gKey]
 }
 
-// SetMaxCPUGroups replaces all per-resource-group maxCPU flags with
-// the provided map. Input IDs are interpreted as resource group IDs
-// (rgKind); only rg-keyed containers consult this map (see
-// getMaxCPULocked), so a numerically equal tenant ID can never
-// inherit the flag. Groups absent from the map revert to the default
+// SetMaxCPUGroups replaces all per-group maxCPU flags with the
+// provided map. Callers should construct keys via rgGroupKey: only
+// resource groups are intended to carry the MAX_CPU flag, and
+// getMaxCPULocked looks up containers by their groupKey, so a
+// tenant-keyed lookup naturally misses an rg-keyed map and returns
+// false. Groups absent from the map revert to the default
 // (maxCPU=false). Existing groups have their burst buckets updated;
 // new groups will pick up their flag when created. The map is
-// captured by reference; the caller must not modify it after calling.
-func (q *WorkQueue) SetMaxCPUGroups(groups map[uint64]bool) {
+// captured by reference; the caller must not modify it after
+// calling.
+func (q *WorkQueue) SetMaxCPUGroups(groups map[groupKey]bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.mu.maxCPUGroups = groups

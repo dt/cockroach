@@ -549,12 +549,12 @@ func runCPUTimeTokenWorkQueueTest(t *testing.T, path string) {
 				// Build the full map from current state plus the new entry,
 				// then call the production SetMaxCPUGroups method.
 				q.mu.Lock()
-				m := make(map[uint64]bool, len(q.mu.maxCPUGroups))
+				m := make(map[groupKey]bool, len(q.mu.maxCPUGroups))
 				for k, val := range q.mu.maxCPUGroups {
 					m[k] = val
 				}
 				q.mu.Unlock()
-				m[uint64(group)] = v
+				m[rgGroupKey(uint64(group))] = v
 				q.SetMaxCPUGroups(m)
 				return ""
 
