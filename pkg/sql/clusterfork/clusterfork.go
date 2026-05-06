@@ -26,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 )
@@ -36,6 +37,19 @@ import (
 // the lease itself well before this lapses.
 //
 // TODO(dt): heartbeat / extend the lease while the orchestration runs.
+//
+// TODO(dt): force-drop tenant. A regular DROP TENANT issues
+// non-admin writes (ClearRange) which the InconsistentReplicas
+// dispatch reject blocks on locked dst ranges, and it does not clear
+// the per-replica missing-spans state. For cleanup of half-baked
+// forks (CreateTenantRecord committed but ForkTenant errored
+// partway), we need a force-drop path that, through raft on each dst
+// replica, excises the tenant span at the LSM level and clears both
+// the InconsistentReplicas bit on the descriptor and the
+// missing-spans range-id-local key — bypassing the normal
+// non-admin-write reject. Without this, a partial-fork tenant in
+// DataStateAdd cannot be cleanly removed and its keyspace remains
+// untouchable until the inconsistency lease expires.
 const defaultLeaseDuration = 30 * time.Minute
 
 // ForkTenant produces dst tenant as a copy-on-write fork of src tenant
@@ -141,12 +155,10 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 				// Skip; CloneData on this dst range is a no-op.
 				continue
 			}
+			startKey := dstDesc.StartKey.AsRawKey()
 			voters := replicationTargets(src.Replicas().VoterDescriptors())
 			nonVoters := replicationTargets(src.Replicas().NonVoterDescriptors())
-			if err := db.AdminRelocateRange(
-				ctx, dstDesc.StartKey.AsRawKey(), voters, nonVoters,
-				true, /* transferLeaseToFirstVoter */
-			); err != nil {
+			if err := relocateWithRetry(ctx, db, startKey, voters, nonVoters); err != nil {
 				return errors.Wrapf(err,
 					"AdminRelocateRange dst range %s to colocate with src range %s",
 					dstDesc.RSpan(), src.RSpan())
@@ -276,6 +288,41 @@ func replicationTargets(descs []roachpb.ReplicaDescriptor) []roachpb.Replication
 	return out
 }
 
+// relocateWithRetry calls AdminRelocateRange in a bounded retry loop.
+// AdminRelocateRange's "descriptor changed" check fires when the
+// allocator/replicate queue races with our orchestration on the
+// destination range — we set the InconsistencyLease bit on dst ranges
+// to keep the consistency / merge / replica-GC queues hands-off, but
+// the replicate queue still rebalances to satisfy zone configs. Each
+// retry re-issues against the latest descriptor; AdminRelocateRange is
+// idempotent for already-correct placements, so successive attempts
+// converge.
+func relocateWithRetry(
+	ctx context.Context,
+	db *kv.DB,
+	startKey roachpb.Key,
+	voters, nonVoters []roachpb.ReplicationTarget,
+) error {
+	opts := retry.Options{
+		InitialBackoff: 50 * time.Millisecond,
+		MaxBackoff:     2 * time.Second,
+		Multiplier:     2,
+		MaxRetries:     10,
+	}
+	var lastErr error
+	for r := retry.StartWithCtx(ctx, opts); r.Next(); {
+		lastErr = db.AdminRelocateRange(
+			ctx, startKey, voters, nonVoters,
+			true, /* transferLeaseToFirstVoter */
+		)
+		if lastErr == nil {
+			return nil
+		}
+		log.Dev.Infof(ctx, "AdminRelocateRange at %s failed (will retry): %v", startKey, lastErr)
+	}
+	return lastErr
+}
+
 // rewritePrefix returns key with srcPrefix replaced by dstPrefix.
 // key is expected to start with srcPrefix.
 func rewritePrefix(key, srcPrefix, dstPrefix roachpb.Key) roachpb.Key {
@@ -343,6 +390,17 @@ func setReplicaInconsistency(
 // srcSpan under dstPrefix on every replica's local store. The
 // destination span is the substitution image of srcSpan: srcPrefix
 // swapped for dstPrefix on both bounds.
+//
+// CloneData is sent as a range request scoped to a single source
+// range. If the source range was split since the orchestration scanned
+// the descriptor list, the request span no longer fits in the actual
+// range and we receive RangeKeyMismatchError. The error carries the
+// actual range bounds (the leftmost range our request touched); we
+// recover by cloning that range's portion of srcSpan and recursing on
+// the remainder. Each level handles one split; recursion bounds itself
+// at the actual number of post-split ranges in srcSpan. Re-runs of an
+// already-cloned span are safe because Pebble's VirtualClone is
+// excise-on-clone-idempotent at the LSM level.
 func sendCloneData(
 	ctx context.Context, db *kv.DB, srcSpan roachpb.Span, srcPrefix, dstPrefix roachpb.Key,
 ) error {
@@ -361,7 +419,34 @@ func sendCloneData(
 	}
 	b := &kv.Batch{}
 	b.AddRawRequest(req)
-	return db.Run(ctx, b)
+	err := db.Run(ctx, b)
+	if err == nil {
+		return nil
+	}
+	var mismatch *kvpb.RangeKeyMismatchError
+	if !errors.As(err, &mismatch) {
+		return err
+	}
+	ri, riErr := mismatch.MismatchedRange()
+	if riErr != nil {
+		return errors.WithSecondaryError(err, riErr)
+	}
+	splitAt := ri.Desc.EndKey.AsRawKey()
+	// Defensive: the actual range's end should fall strictly inside our
+	// span (mismatch implies srcSpan extends past the range's end). If
+	// it doesn't, fall through with the original error rather than
+	// looping forever.
+	if bytes.Compare(splitAt, srcSpan.Key) <= 0 ||
+		bytes.Compare(splitAt, srcSpan.EndKey) >= 0 {
+		return err
+	}
+	log.Dev.Infof(ctx, "CloneData on %s hit split at %s; subdividing", srcSpan, splitAt)
+	if err := sendCloneData(ctx, db,
+		roachpb.Span{Key: srcSpan.Key, EndKey: splitAt}, srcPrefix, dstPrefix); err != nil {
+		return err
+	}
+	return sendCloneData(ctx, db,
+		roachpb.Span{Key: splitAt, EndKey: srcSpan.EndKey}, srcPrefix, dstPrefix)
 }
 
 // rewriteSpanBound translates a span boundary key from srcPrefix space
