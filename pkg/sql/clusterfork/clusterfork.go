@@ -17,6 +17,7 @@ package clusterfork
 import (
 	"bytes"
 	"context"
+	"math/rand/v2"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -24,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
@@ -51,6 +53,15 @@ import (
 // DataStateAdd cannot be cleanly removed and its keyspace remains
 // untouchable until the inconsistency lease expires.
 const defaultLeaseDuration = 30 * time.Minute
+
+// cloneDataParallelism caps how many CloneData RPCs the orchestration
+// fans out concurrently in the clone-data-all step. The per-range RPCs
+// are independent (different leaseholders, different replicas), so the
+// limit is mostly about not overwhelming the cluster with thousands of
+// simultaneous raft commands when a tenant has many ranges. Tenants
+// with fewer than this many ranges run all clones in parallel; larger
+// tenants stream them through this many workers.
+const cloneDataParallelism = 16
 
 // ForkTenant produces dst tenant as a copy-on-write fork of src tenant
 // as of T. The destination tenant must already be created and empty
@@ -173,28 +184,49 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 	// "clone-data-all" span; each individual range's CloneData gets its
 	// own child span so per-range timing is visible in the trace.
 	if err := step("clone-data-all", func(ctx context.Context) error {
+		// Build per-source-range work items, clamping each to the tenant
+		// span (the leftmost or rightmost source range may extend beyond
+		// the tenant on either side; we only want to clone what's inside
+		// this tenant).
+		spans := make([]roachpb.Span, 0, len(srcDescs))
 		for _, srcDesc := range srcDescs {
-			rangeSrcSpan := roachpb.Span{
+			s := roachpb.Span{
 				Key:    srcDesc.StartKey.AsRawKey(),
 				EndKey: srcDesc.EndKey.AsRawKey(),
 			}
-			// Clamp the source span to the tenant prefix (the leftmost or
-			// rightmost source range may extend beyond the tenant on either
-			// side; we only want to clone what's inside this tenant).
-			if bytes.Compare(rangeSrcSpan.Key, srcSpan.Key) < 0 {
-				rangeSrcSpan.Key = srcSpan.Key
+			if bytes.Compare(s.Key, srcSpan.Key) < 0 {
+				s.Key = srcSpan.Key
 			}
-			if bytes.Compare(rangeSrcSpan.EndKey, srcSpan.EndKey) > 0 {
-				rangeSrcSpan.EndKey = srcSpan.EndKey
+			if bytes.Compare(s.EndKey, srcSpan.EndKey) > 0 {
+				s.EndKey = srcSpan.EndKey
 			}
-			rangeCtx, rangeSp := tracing.ChildSpan(ctx, "clusterfork.clone-data-range")
-			err := sendCloneData(rangeCtx, db, rangeSrcSpan, srcPrefix, dstPrefix)
-			rangeSp.Finish()
-			if err != nil {
-				return errors.Wrapf(err, "CloneData on source range %s", rangeSrcSpan)
-			}
+			spans = append(spans, s)
 		}
-		return nil
+		// Fan out CloneData per source range across cloneDataParallelism
+		// workers. The per-range RPCs are independent (different
+		// leaseholders, different replicas) so there's no contention
+		// between them; serial execution was the limiter on wall time.
+		//
+		// Shuffle the work order so adjacent ranges (which tend to share
+		// leaseholders and storage paths in practice) don't pile onto the
+		// same nodes when all workers start at once.
+		rand.Shuffle(len(spans), func(i, j int) { spans[i], spans[j] = spans[j], spans[i] })
+		workCh := make(chan roachpb.Span, len(spans))
+		for _, s := range spans {
+			workCh <- s
+		}
+		close(workCh)
+		return ctxgroup.GroupWorkers(ctx, cloneDataParallelism, func(ctx context.Context, _ int) error {
+			for s := range workCh {
+				rangeCtx, rangeSp := tracing.ChildSpan(ctx, "clusterfork.clone-data-range")
+				err := sendCloneData(rangeCtx, db, s, srcPrefix, dstPrefix)
+				rangeSp.Finish()
+				if err != nil {
+					return errors.Wrapf(err, "CloneData on source range %s", s)
+				}
+			}
+			return nil
+		})
 	}); err != nil {
 		return err
 	}
