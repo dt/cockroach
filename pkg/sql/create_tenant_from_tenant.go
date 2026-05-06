@@ -187,26 +187,40 @@ func (n *createTenantFromTenantNode) startExec(params runParams) error {
 	}
 
 	// Activate the destination: flip data_state from ADD to READY now
-	// that the keyspace is populated. Service mode stays NONE — the user
-	// can ALTER VIRTUAL CLUSTER ... START SERVICE later, matching the
-	// no-bootstrap CREATE VIRTUAL CLUSTER baseline.
+	// that the keyspace is populated.
 	//
 	// As with the create, this update runs in its own auto-commit
 	// internal txn so the activation is durable as soon as the fork
 	// succeeds. Keeping it in the planner txn would risk a successful
 	// fork being silently reverted to ADD state if the planner txn later
 	// rolls back (e.g., on client disconnect after startExec returns).
-	return p.execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		dstInfo, err := GetTenantRecordByID(ctx, txn, dstID, p.execCfg.Settings)
+	var dstInfo *mtinfopb.TenantInfo
+	if err := p.execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+		info, err := GetTenantRecordByID(ctx, txn, dstID, p.execCfg.Settings)
 		if err != nil {
 			return errors.Wrap(err, "loading destination tenant after fork")
 		}
-		dstInfo.DataState = mtinfopb.DataStateReady
-		if err := UpdateTenantRecord(ctx, p.execCfg.Settings, txn, dstInfo); err != nil {
+		info.DataState = mtinfopb.DataStateReady
+		if err := UpdateTenantRecord(ctx, p.execCfg.Settings, txn, info); err != nil {
 			return errors.Wrap(err, "activating destination tenant after fork")
 		}
+		dstInfo = info
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Mirror the source's service mode onto the destination. setTenantService
+	// drives its own transactions internally, so it must run after the
+	// activation txn above commits. ServiceModeNone is the default for a
+	// freshly-created tenant, so we only act if the source had a service.
+	if srcInfo.ServiceMode == mtinfopb.ServiceModeNone {
+		return nil
+	}
+	if err := p.setTenantService(ctx, dstInfo, srcInfo.ServiceMode); err != nil {
+		return errors.Wrapf(err, "starting service %q on destination tenant", srcInfo.ServiceMode)
+	}
+	return nil
 }
 
 func (n *createTenantFromTenantNode) Next(_ runParams) (bool, error) { return false, nil }
