@@ -79,7 +79,7 @@
 /pkg/sql/control_job*        @cockroachdb/sql-queries-prs @cockroachdb/jobs-prs
 /pkg/sql/job_exec_context*   @cockroachdb/sql-queries-prs @cockroachdb/jobs-prs
 /pkg/sql/delegate/*job*.go   @cockroachdb/jobs-prs @cockroachdb/disaster-recovery
-/pkg/sql/vecindex/           @cockroachdb/sql-queries-prs
+/pkg/sql/vecindex/           @cockroachdb/specialized-indexing-prs
 /pkg/sql/partition*.go       @cockroachdb/sql-queries-prs
 /pkg/sql/temporary_schema*   @cockroachdb/sql-queries-prs
 #!/pkg/sql/BUILD.bazel       @cockroachdb/sql-queries-noreview
