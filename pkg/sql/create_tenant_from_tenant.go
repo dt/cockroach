@@ -11,6 +11,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterfork"
+	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -92,32 +93,78 @@ func (n *createTenantFromTenantNode) startExec(params runParams) error {
 			"destination tenant name is required for CREATE VIRTUAL CLUSTER FROM")
 	}
 
+	// CREATE VIRTUAL CLUSTER FROM commits side-effecting work (the dst
+	// tenant record, ForkTenant's KV mutations, the activation flip)
+	// across multiple independent transactions and runs each step on
+	// the assumption that prior steps have committed. That model is
+	// incompatible with an explicit BEGIN/COMMIT block where the
+	// caller controls when the planner txn commits.
+	if !p.ExtendedEvalContext().TxnIsSingleStmt {
+		return pgerror.Newf(pgcode.InvalidTransactionState,
+			"CREATE VIRTUAL CLUSTER FROM cannot be used inside a multi-statement transaction")
+	}
+
+	// Commit the planner txn now, before any of the side-effecting work
+	// below runs. ForkTenant takes seconds to minutes; running it under
+	// the planner txn would expose us to txn refresh errors, and more
+	// importantly the orchestration's KV mutations auto-commit through
+	// the raw DB independently of the planner txn. Committing here makes
+	// each subsequent ISQL txn the unambiguous home for its own writes.
+	if err := p.Txn().Commit(ctx); err != nil {
+		return err
+	}
+	// Releasing descriptor leases held by the (now-committed) planner
+	// txn. We're about to do schema-affecting work in fresh ISQL txns;
+	// holding leases acquired under the old txn would interfere. Pattern
+	// borrowed from CREATE LOGICAL REPLICATION STREAM (see
+	// pkg/crosscluster/logical/create_logical_replication_stmt.go).
+	p.InternalSQLTxn().Descriptors().ReleaseAll(ctx)
+
 	// Allocate the destination tenant the way PCR does: insert the row
 	// directly with DataStateAdd so the destination keyspace is *not*
-	// bootstrapped with system tables. Bootstrapping would lay down
-	// data in the dst LSM that collides with what VirtualClone is
-	// about to mount there.
-	zcfg, err := zoneconfig.GetHydratedForTenantsRange(
-		ctx, p.Txn(), p.ExtendedEvalContext().Descs)
-	if err != nil {
-		return errors.Wrap(err, "loading initial tenant zone config")
-	}
-	tenantInfo := &mtinfopb.TenantInfoWithUsage{
-		SQLInfo: mtinfopb.SQLInfo{
-			Name:      dstName,
-			DataState: mtinfopb.DataStateAdd,
-		},
-	}
-	dstID, err := CreateTenantRecord(
-		ctx, p.execCfg.Codec, p.execCfg.Settings,
-		p.InternalSQLTxn(),
-		p.execCfg.SpanConfigKVAccessor.WithISQLTxn(ctx, p.InternalSQLTxn()),
-		tenantInfo, zcfg,
-		n.ifNotExists,
-		p.execCfg.TenantTestingKnobs,
-	)
-	if err != nil {
-		return errors.Wrapf(err, "allocating destination tenant %q", dstName)
+	// bootstrapped with system tables. Bootstrapping would lay down data
+	// in the dst LSM that collides with what VirtualClone is about to
+	// mount there.
+	//
+	// The insert runs in its own auto-commit internal txn so the
+	// system.tenants row is durable BEFORE ForkTenant starts mutating
+	// /Tenant/<dstID>/... Otherwise: ForkTenant errors → tenant row
+	// never committed → ForkTenant's KV side effects are orphaned under
+	// a tenant ID nobody knows is in use; no DROP TENANT path can reach
+	// them, and the ID can be reallocated to a future CREATE TENANT,
+	// which will then bootstrap on top of garbage. With the standalone
+	// commit, a half-baked fork is always visible in SHOW TENANTS as
+	// DataStateAdd and droppable via DROP TENANT (modulo the force-drop
+	// TODO in clusterfork.go for the case where dst ranges still hold
+	// the InconsistencyLease at fail time).
+	var dstID roachpb.TenantID
+	if err := p.execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+		zcfg, err := zoneconfig.GetHydratedForTenantsRange(
+			ctx, txn.KV(), p.ExtendedEvalContext().Descs)
+		if err != nil {
+			return errors.Wrap(err, "loading initial tenant zone config")
+		}
+		tenantInfo := &mtinfopb.TenantInfoWithUsage{
+			SQLInfo: mtinfopb.SQLInfo{
+				Name:      dstName,
+				DataState: mtinfopb.DataStateAdd,
+			},
+		}
+		id, err := CreateTenantRecord(
+			ctx, p.execCfg.Codec, p.execCfg.Settings,
+			txn,
+			p.execCfg.SpanConfigKVAccessor.WithISQLTxn(ctx, txn),
+			tenantInfo, zcfg,
+			n.ifNotExists,
+			p.execCfg.TenantTestingKnobs,
+		)
+		if err != nil {
+			return errors.Wrapf(err, "allocating destination tenant %q", dstName)
+		}
+		dstID = id
+		return nil
+	}); err != nil {
+		return err
 	}
 	if !dstID.IsSet() {
 		// IF NOT EXISTS hit: tenant already existed. Don't fork into an
@@ -139,19 +186,27 @@ func (n *createTenantFromTenantNode) startExec(params runParams) error {
 		return errors.Wrapf(err, "forking %d -> %d", srcID, dstID)
 	}
 
-	// Activate the destination: flip data_state from ADD to READY now that
-	// the keyspace is populated. Service mode stays NONE — the user can
-	// ALTER VIRTUAL CLUSTER ... START SERVICE later, matching the
+	// Activate the destination: flip data_state from ADD to READY now
+	// that the keyspace is populated. Service mode stays NONE — the user
+	// can ALTER VIRTUAL CLUSTER ... START SERVICE later, matching the
 	// no-bootstrap CREATE VIRTUAL CLUSTER baseline.
-	dstInfo, err := GetTenantRecordByID(ctx, p.InternalSQLTxn(), dstID, p.execCfg.Settings)
-	if err != nil {
-		return errors.Wrap(err, "loading destination tenant after fork")
-	}
-	dstInfo.DataState = mtinfopb.DataStateReady
-	if err := UpdateTenantRecord(ctx, p.execCfg.Settings, p.InternalSQLTxn(), dstInfo); err != nil {
-		return errors.Wrap(err, "activating destination tenant after fork")
-	}
-	return nil
+	//
+	// As with the create, this update runs in its own auto-commit
+	// internal txn so the activation is durable as soon as the fork
+	// succeeds. Keeping it in the planner txn would risk a successful
+	// fork being silently reverted to ADD state if the planner txn later
+	// rolls back (e.g., on client disconnect after startExec returns).
+	return p.execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+		dstInfo, err := GetTenantRecordByID(ctx, txn, dstID, p.execCfg.Settings)
+		if err != nil {
+			return errors.Wrap(err, "loading destination tenant after fork")
+		}
+		dstInfo.DataState = mtinfopb.DataStateReady
+		if err := UpdateTenantRecord(ctx, p.execCfg.Settings, txn, dstInfo); err != nil {
+			return errors.Wrap(err, "activating destination tenant after fork")
+		}
+		return nil
+	})
 }
 
 func (n *createTenantFromTenantNode) Next(_ runParams) (bool, error) { return false, nil }
