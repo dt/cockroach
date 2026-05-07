@@ -824,7 +824,26 @@ func (db *DB) AdminRelocateRange(
 	transferLeaseToFirstVoter bool,
 ) error {
 	b := &Batch{}
-	b.adminRelocateRange(key, voterTargets, nonVoterTargets, transferLeaseToFirstVoter)
+	b.adminRelocateRange(key, voterTargets, nonVoterTargets,
+		transferLeaseToFirstVoter, false /* pinResultingReplicas */)
+	return getOneErr(db.Run(ctx, b), b)
+}
+
+// AdminRelocateRangeAndPin is like AdminRelocateRange but additionally sets
+// ReplicaDescriptor.PinnedToStore=true on every replica in the range's
+// descriptor after the relocation completes. The pin tells the allocator
+// not to discretionarily remove the replica from its assigned store; see
+// the field comment on roachpb.ReplicaDescriptor.PinnedToStore for the
+// semantics and the lifecycle.
+func (db *DB) AdminRelocateRangeAndPin(
+	ctx context.Context,
+	key interface{},
+	voterTargets, nonVoterTargets []roachpb.ReplicationTarget,
+	transferLeaseToFirstVoter bool,
+) error {
+	b := &Batch{}
+	b.adminRelocateRange(key, voterTargets, nonVoterTargets,
+		transferLeaseToFirstVoter, true /* pinResultingReplicas */)
 	return getOneErr(db.Run(ctx, b), b)
 }
 

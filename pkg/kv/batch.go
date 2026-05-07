@@ -1009,6 +1009,7 @@ func (b *Batch) adminRelocateRange(
 	key interface{},
 	voterTargets, nonVoterTargets []roachpb.ReplicationTarget,
 	transferLeaseToFirstVoter bool,
+	pinResultingReplicas bool,
 ) {
 	k, err := marshalKey(key)
 	if err != nil {
@@ -1023,6 +1024,7 @@ func (b *Batch) adminRelocateRange(
 		NonVoterTargets:                   nonVoterTargets,
 		TransferLeaseToFirstVoter:         transferLeaseToFirstVoter,
 		TransferLeaseToFirstVoterAccurate: true,
+		PinResultingReplicas:              pinResultingReplicas,
 	}
 	b.appendReqs(req)
 	b.initResult(1, 0, notRaw, nil)

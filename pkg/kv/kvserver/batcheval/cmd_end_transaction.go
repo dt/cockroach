@@ -1038,6 +1038,21 @@ func RunCommitTrigger(
 		}
 		return res, nil
 	}
+	if prt := ct.GetPinReplicasTrigger(); prt != nil {
+		oldDesc := rec.Desc()
+		newDesc := *oldDesc
+		repls := newDesc.Replicas().Descriptors()
+		for i := range repls {
+			repls[i].PinnedToStore = prt.PinnedToStore
+		}
+		newDesc.SetReplicas(roachpb.MakeReplicaSet(repls))
+
+		var res result.Result
+		res.Replicated.State = &kvserverpb.ReplicaState{
+			Desc: &newDesc,
+		}
+		return res, nil
+	}
 
 	log.KvExec.Fatalf(ctx, "unknown commit trigger: %+v", ct)
 	return result.Result{}, nil

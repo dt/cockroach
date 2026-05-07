@@ -3757,6 +3757,7 @@ func (r *Replica) AdminRelocateRange(
 	rangeDesc roachpb.RangeDescriptor,
 	voterTargets, nonVoterTargets []roachpb.ReplicationTarget,
 	transferLeaseToFirstVoter bool,
+	pinResultingReplicas bool,
 ) error {
 	if containsDuplicates(voterTargets) {
 		return errors.AssertionFailedf(
@@ -3791,6 +3792,71 @@ func (r *Replica) AdminRelocateRange(
 	)
 	if err != nil {
 		return err
+	}
+	if pinResultingReplicas {
+		if err := r.pinReplicasToStores(ctx); err != nil {
+			return errors.Wrap(err, "pinning replicas after relocate")
+		}
+	}
+	return nil
+}
+
+// pinReplicasToStores sets ReplicaDescriptor.PinnedToStore=true on every
+// replica in the range's descriptor via a transactional CPut + commit
+// trigger. The trigger forces every replica's apply path to install the
+// new descriptor in-memory so the leaseholder's next allocator pass sees
+// the pin. No-op if every replica is already pinned.
+func (r *Replica) pinReplicasToStores(ctx context.Context) error {
+	pErr := r.executeAdminCommandWithDescriptor(ctx, func(desc *roachpb.RangeDescriptor) error {
+		repls := desc.Replicas().Descriptors()
+		anyChange := false
+		for i := range repls {
+			if !repls[i].PinnedToStore {
+				anyChange = true
+				break
+			}
+		}
+		if !anyChange {
+			return nil
+		}
+		newDesc := *desc
+		newRepls := make([]roachpb.ReplicaDescriptor, len(repls))
+		copy(newRepls, repls)
+		for i := range newRepls {
+			newRepls[i].PinnedToStore = true
+		}
+		newDesc.SetReplicas(roachpb.MakeReplicaSet(newRepls))
+
+		return r.store.DB().Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+			_, dbDescValue, _, err := conditionalGetDescValueFromDB(
+				ctx, txn, desc.StartKey, false /* forUpdate */, checkDescsEqual(desc))
+			if err != nil {
+				return err
+			}
+			descKey := keys.RangeDescriptorKey(newDesc.StartKey)
+			b := txn.NewBatch()
+			if err := updateRangeDescriptor(b, descKey, dbDescValue, &newDesc); err != nil {
+				return err
+			}
+			// Run the descriptor write first so the txn record lands on the
+			// right range; the commit trigger's eval relies on that.
+			if err := txn.Run(ctx, b); err != nil {
+				return err
+			}
+			b = txn.NewBatch()
+			b.AddRawRequest(&kvpb.EndTxnRequest{
+				Commit: true,
+				InternalCommitTrigger: &roachpb.InternalCommitTrigger{
+					PinReplicasTrigger: &roachpb.PinReplicasTrigger{
+						PinnedToStore: true,
+					},
+				},
+			})
+			return txn.Run(ctx, b)
+		})
+	})
+	if pErr != nil {
+		return pErr.GoError()
 	}
 	return nil
 }

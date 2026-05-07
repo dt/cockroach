@@ -1067,7 +1067,8 @@ func (r *Replica) executeAdminBatch(
 		// We also revert to that behavior if the caller specifically asked for it.
 		transferLeaseToFirstVoter = transferLeaseToFirstVoter || tArgs.TransferLeaseToFirstVoter
 		err := r.AdminRelocateRange(
-			ctx, *r.Desc(), tArgs.VoterTargets, tArgs.NonVoterTargets, transferLeaseToFirstVoter,
+			ctx, *r.Desc(), tArgs.VoterTargets, tArgs.NonVoterTargets,
+			transferLeaseToFirstVoter, tArgs.PinResultingReplicas,
 		)
 		pErr = kvpb.NewError(err)
 		resp = &kvpb.AdminRelocateRangeResponse{}

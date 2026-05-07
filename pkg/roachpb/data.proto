@@ -324,6 +324,21 @@ message InconsistentReplicasTrigger {
   Span scope = 2 [(gogoproto.nullable) = false];
 }
 
+// PinReplicasTrigger indicates that ReplicaDescriptor.PinnedToStore should
+// be set to the supplied value on every replica in the range descriptor as
+// part of committing the txn. The accompanying CPut on the descriptor must
+// agree.
+//
+// Used by AdminRelocateRange when pin_resulting_replicas=true. The commit
+// trigger forces every replica's in-memory RangeDescriptor to pick up the
+// new pin state, so the allocator's next consideration of this range sees
+// the bit on the leaseholder's cached descriptor.
+message PinReplicasTrigger {
+  // PinnedToStore is the new value to install on every replica's
+  // ReplicaDescriptor.PinnedToStore field. True pins; false unpins.
+  bool pinned_to_store = 1;
+}
+
 // InternalCommitTrigger encapsulates all of the internal-only commit triggers.
 // Only one may be set.
 message InternalCommitTrigger {
@@ -337,6 +352,7 @@ message InternalCommitTrigger {
   ModifiedSpanTrigger modified_span_trigger = 4;
   StickyBitTrigger sticky_bit_trigger = 5;
   InconsistentReplicasTrigger inconsistent_replicas_trigger = 6;
+  PinReplicasTrigger pin_replicas_trigger = 7;
 }
 
 // TransactionStatus specifies possible states for a transaction.
