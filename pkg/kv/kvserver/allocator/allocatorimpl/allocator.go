@@ -997,21 +997,53 @@ func (a *Allocator) ComputeAction(
 			log.KvDistribution.Warningf(ctx, "allocator returned -1 priority for range %s: %v", desc, action)
 		}
 	}
-	// Suppress purely discretionary actions on a range that is mid-clone
-	// (InconsistentReplicas lease held). The cluster-fork orchestration
-	// places these ranges to colocate with their src ranges; a rebalance
-	// at this point would chase the stats-anomaly that exists during
-	// clone (cloned virtual SSTs make a range cheap to host on the src's
-	// stores but the allocator's logical-bytes view doesn't know that)
-	// and would keep racing the orchestration's recolocate. Necessary
-	// actions (replace dead, replace decommissioning, add for under-
-	// replication, finalize joint config, remove learner) are still
-	// allowed because they handle correctness, not balance.
-	if action == AllocatorConsiderRebalance && !desc.InconsistentReplicas.IsEmpty() &&
-		!roachpb.IsInconsistencyLeaseAborted(desc.InconsistentReplicas) {
-		return AllocatorNoop, AllocatorNoop.Priority()
-	}
 	return action, priority
+}
+
+// filterPinnedRemovalCandidates returns candidates with pinned-to-store
+// replicas dropped, except where the pinned replica's store is dead (in
+// which case removal must proceed regardless of the pin to recover
+// replication factor). Decommissioning replicas are not filtered here;
+// the planner routes them through the dedicated Replace/Remove
+// Decommissioning paths that pass the specific replica directly and
+// don't go through this candidate-filtering site.
+//
+// PinnedToStore is set by orchestrations (e.g. cluster-fork) that have
+// deliberately placed a replica on a specific store and don't want the
+// allocator to drift it: a virtually-cloned replica is cheap to host
+// where its backing data already exists and expensive to materialize
+// elsewhere, but the allocator's logical-bytes view doesn't see that
+// asymmetry. The pin is set per-replica so each store's replica can
+// independently lose the pin once divergence justifies it.
+//
+// TODO(dt): the pin lifecycle (when to clear) lives outside this
+// filter — see RangeDescriptor.ReplicaDescriptor.PinnedToStore.
+func filterPinnedRemovalCandidates(
+	storePool storepool.AllocatorStorePool, candidates []roachpb.ReplicaDescriptor,
+) []roachpb.ReplicaDescriptor {
+	// Most ranges have no pinned replicas; skip the allocation in that case.
+	hasPinned := false
+	for _, c := range candidates {
+		if c.PinnedToStore {
+			hasPinned = true
+			break
+		}
+	}
+	if !hasPinned {
+		return candidates
+	}
+	live, dead := storePool.LiveAndDeadReplicas(candidates, true /* includeSuspectAndDrainingStores */)
+	out := make([]roachpb.ReplicaDescriptor, 0, len(candidates))
+	for _, c := range live {
+		if c.PinnedToStore {
+			continue
+		}
+		out = append(out, c)
+	}
+	// Dead replicas must be removable even if pinned (replication-factor
+	// recovery overrides the pin's "leave me here" intent).
+	out = append(out, dead...)
+	return out
 }
 
 // computeAction determines the action to take on a range along with its
@@ -1614,6 +1646,7 @@ func (a Allocator) simulateRemoveTarget(
 	targetType TargetReplicaType,
 	options ScorerOptions,
 ) (roachpb.ReplicationTarget, string, error) {
+	candidates = filterPinnedRemovalCandidates(storePool, candidates)
 	candidateStores := make([]roachpb.StoreDescriptor, 0, len(candidates))
 	for _, cand := range candidates {
 		for _, store := range sl.Stores {
@@ -1748,6 +1781,7 @@ func (a Allocator) RemoveVoter(
 	existingNonVoters []roachpb.ReplicaDescriptor,
 	options ScorerOptions,
 ) (roachpb.ReplicationTarget, string, error) {
+	voterCandidates = filterPinnedRemovalCandidates(storePool, voterCandidates)
 	// Retrieve store descriptors for the provided candidates from the StorePool.
 	candidateStoreIDs := make(roachpb.StoreIDSlice, len(voterCandidates))
 	for i, exist := range voterCandidates {
@@ -1781,6 +1815,7 @@ func (a Allocator) RemoveNonVoter(
 	existingNonVoters []roachpb.ReplicaDescriptor,
 	options ScorerOptions,
 ) (roachpb.ReplicationTarget, string, error) {
+	nonVoterCandidates = filterPinnedRemovalCandidates(storePool, nonVoterCandidates)
 	// Retrieve store descriptors for the provided candidates from the StorePool.
 	candidateStoreIDs := make(roachpb.StoreIDSlice, len(nonVoterCandidates))
 	for i, exist := range nonVoterCandidates {
