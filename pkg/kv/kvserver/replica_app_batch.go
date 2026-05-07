@@ -38,7 +38,7 @@ import (
 // to the current view of ReplicaState and staged in the batch. The batch is
 // committed to the state machine's storage engine atomically.
 type replicaAppBatch struct {
-	ab appBatch
+	appBatch
 
 	r          *Replica
 	applyStats *applyCommittedEntriesStats
@@ -131,7 +131,7 @@ func (b *replicaAppBatch) Stage(
 
 	// Run any triggers that should occur before the batch is applied
 	// and before the write batch is staged in the batch.
-	if err := b.ab.runPreAddTriggers(ctx, &cmd.ReplicatedCmd); err != nil {
+	if err := b.runPreAddTriggers(ctx, &cmd.ReplicatedCmd); err != nil {
 		return nil, err
 	}
 
@@ -144,7 +144,7 @@ func (b *replicaAppBatch) Stage(
 	}
 
 	// Stage the command's write batch in the application batch.
-	if err := b.ab.addWriteBatch(ctx, b.batch.State(), cmd); err != nil {
+	if err := b.addWriteBatch(ctx, b.batch.State(), cmd); err != nil {
 		return nil, err
 	}
 
@@ -152,7 +152,7 @@ func (b *replicaAppBatch) Stage(
 	// after the (current) write batch is staged in the batch. Note that additional
 	// calls to `Stage` (for subsequent log entries) may occur before the batch
 	// will be committed, but all of these commands will be `IsTrivial()`.
-	if err := b.ab.runPostAddTriggers(ctx, &cmd.ReplicatedCmd, postAddEnv{
+	if err := b.runPostAddTriggers(ctx, &cmd.ReplicatedCmd, postAddEnv{
 		st:          b.r.store.cfg.Settings,
 		eng:         b.r.store.StateEngine(),
 		sideloaded:  b.r.logStorage.ls.Sideload,
@@ -172,11 +172,11 @@ func (b *replicaAppBatch) Stage(
 	if err := b.stageTrivialReplicatedEvalResult(ctx, cmd); err != nil {
 		return nil, err
 	}
-	b.ab.numEntriesProcessed++
+	b.numEntriesProcessed++
 	size := len(cmd.Data)
-	b.ab.numEntriesProcessedBytes += int64(size)
+	b.numEntriesProcessedBytes += int64(size)
 	if size == 0 {
-		b.ab.numEmptyEntries++
+		b.numEmptyEntries++
 	}
 
 	// The command was checked by shouldApplyCommand, so it can be returned
@@ -270,7 +270,7 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 	if !cmd.IsLocal() {
 		writeBytes, ingestedBytes := cmd.getStoreWriteByteSizes()
 		if writeBytes > 0 || ingestedBytes > 0 {
-			b.ab.numWriteAndIngestedBytes += writeBytes + ingestedBytes
+			b.numWriteAndIngestedBytes += writeBytes + ingestedBytes
 		}
 		// TODO(irfansharif): This code block can be removed once below-raft
 		// admission control is the only form of IO admission control. It pre-dates
@@ -631,7 +631,7 @@ func (b *replicaAppBatch) stageTrivialReplicatedEvalResult(
 // application.
 func (b *replicaAppBatch) ApplyToStateMachine(ctx context.Context) error {
 	if log.V(4) {
-		log.KvExec.Infof(ctx, "flushing batch %v of %d entries", b.state, b.ab.numEntriesProcessed)
+		log.KvExec.Infof(ctx, "flushing batch %v of %d entries", b.state, b.numEntriesProcessed)
 	}
 
 	// Add the replica applied state key to the write batch if this change
@@ -725,7 +725,7 @@ func (b *replicaAppBatch) ApplyToStateMachine(ctx context.Context) error {
 	r.store.metrics.addMVCCStats(ctx, r.tenantMetricsRef, deltaStats)
 
 	// Record the number of keys written to the replica.
-	b.r.loadStats.RecordWriteKeys(float64(b.ab.numMutations))
+	b.r.loadStats.RecordWriteKeys(float64(b.numMutations))
 
 	now := crtime.NowMono()
 	if needsSplitBySize && r.splitQueueThrottle.ShouldProcess(now) {
@@ -771,15 +771,15 @@ func (b *replicaAppBatch) addAppliedStateToBatch(ctx context.Context) error {
 }
 
 func (b *replicaAppBatch) recordStatsOnCommit() {
-	b.applyStats.appBatchStats.merge(b.ab.appBatchStats)
+	b.applyStats.appBatchStats.merge(b.appBatchStats)
 	b.applyStats.numBatchesProcessed++
 	b.applyStats.followerStoreWriteBytes.Merge(b.followerStoreWriteBytes)
-	b.r.recordRequestWriteBytes(b.ab.numWriteAndIngestedBytes)
+	b.r.recordRequestWriteBytes(b.numWriteAndIngestedBytes)
 
-	if n := b.ab.numAddSST; n > 0 {
+	if n := b.numAddSST; n > 0 {
 		b.r.store.metrics.AddSSTableApplications.Inc(int64(n))
 	}
-	if n := b.ab.numAddSSTCopies; n > 0 {
+	if n := b.numAddSSTCopies; n > 0 {
 		b.r.store.metrics.AddSSTableApplicationCopies.Inc(int64(n))
 	}
 
@@ -936,7 +936,7 @@ func (b *replicaAppBatch) assertNoCmdClosedTimestampRegression(
 				"Closed timestamp was set by req: %s under lease: %s; applied at LAI: %d. Batch idx: %d.\n"+
 				"Raft log tail:\n%s",
 			cmd.ID, cmd.Term, cmd.Index(), existingClosed, newClosed, b.state.Lease, req, cmd.LeaseIndex,
-			prevReq, b.closedTimestampSetter.lease, b.closedTimestampSetter.leaseIdx, b.ab.numEntriesProcessed,
+			prevReq, b.closedTimestampSetter.lease, b.closedTimestampSetter.leaseIdx, b.numEntriesProcessed,
 			logTail)
 		logcrash.ReportOrPanic(ctx, &b.r.ClusterSettings().SV, "%v", err)
 	}
