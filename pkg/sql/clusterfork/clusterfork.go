@@ -17,7 +17,9 @@ package clusterfork
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -180,43 +182,58 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 		return err
 	}
 
-	// 5. Fire CloneData at every source range. Wrapped in a single
-	// "clone-data-all" span; each individual range's CloneData gets its
-	// own child span so per-range timing is visible in the trace.
-	if err := step("clone-data-all", func(ctx context.Context) error {
-		// Build per-source-range work items, clamping each to the tenant
-		// span (the leftmost or rightmost source range may extend beyond
-		// the tenant on either side; we only want to clone what's inside
-		// this tenant).
-		spans := make([]roachpb.Span, 0, len(srcDescs))
-		for _, srcDesc := range srcDescs {
-			s := roachpb.Span{
-				Key:    srcDesc.StartKey.AsRawKey(),
-				EndKey: srcDesc.EndKey.AsRawKey(),
-			}
-			if bytes.Compare(s.Key, srcSpan.Key) < 0 {
-				s.Key = srcSpan.Key
-			}
-			if bytes.Compare(s.EndKey, srcSpan.EndKey) > 0 {
-				s.EndKey = srcSpan.EndKey
-			}
-			spans = append(spans, s)
+	// 5+6. Wave loop: clone CloneData for each todo's src span, then
+	// unlock its dst range. Any dst range whose unlock fails with "clone
+	// is incomplete" goes back into the next wave; the re-fired CloneData
+	// gives any followers / late-initialized dst replicas another chance
+	// to mount the data. CloneData is destructive-then-install at the
+	// engine layer, so re-applying on already-complete replicas is safe
+	// while the dst is still locked.
+	//
+	// Each todo carries the src span that produces the dst range's
+	// content, plus the dst start key to unlock; the 1:1 mapping comes
+	// from the pre-split layout (each src range's prefix-rewritten start
+	// key was the split boundary on dst).
+	type todoItem struct {
+		srcSpan     roachpb.Span
+		dstStartKey roachpb.Key
+	}
+	todo := make([]todoItem, 0, len(srcDescs))
+	for _, srcDesc := range srcDescs {
+		s := roachpb.Span{
+			Key:    srcDesc.StartKey.AsRawKey(),
+			EndKey: srcDesc.EndKey.AsRawKey(),
 		}
-		// Fan out CloneData per source range across cloneDataParallelism
-		// workers. The per-range RPCs are independent (different
-		// leaseholders, different replicas) so there's no contention
-		// between them; serial execution was the limiter on wall time.
-		//
-		// Shuffle the work order so adjacent ranges (which tend to share
-		// leaseholders and storage paths in practice) don't pile onto the
-		// same nodes when all workers start at once.
-		rand.Shuffle(len(spans), func(i, j int) { spans[i], spans[j] = spans[j], spans[i] })
-		workCh := make(chan roachpb.Span, len(spans))
-		for _, s := range spans {
-			workCh <- s
+		if bytes.Compare(s.Key, srcSpan.Key) < 0 {
+			s.Key = srcSpan.Key
+		}
+		if bytes.Compare(s.EndKey, srcSpan.EndKey) > 0 {
+			s.EndKey = srcSpan.EndKey
+		}
+		dstStartKey := rewritePrefix(srcDesc.StartKey.AsRawKey(), srcPrefix, dstPrefix)
+		// The leftmost dst range may begin before dstPrefix (it inherited
+		// from the previous tenant boundary); clamp so unlock targets the
+		// in-tenant start key and AdminSetReplicaInconsistency doesn't
+		// reject with "key is not the start of a range".
+		if bytes.Compare(dstStartKey, dstSpan.Key) < 0 {
+			dstStartKey = dstSpan.Key
+		}
+		todo = append(todo, todoItem{srcSpan: s, dstStartKey: dstStartKey})
+	}
+
+	const maxWaves = 5
+	for wave := 0; wave < maxWaves && len(todo) > 0; wave++ {
+		waveCtx, waveSp := tracing.ChildSpan(ctx, fmt.Sprintf("clusterfork.wave-%d", wave))
+		// Shuffle so adjacent ranges (which tend to share leaseholders /
+		// storage paths) don't pile onto the same nodes when all workers
+		// start at once.
+		rand.Shuffle(len(todo), func(i, j int) { todo[i], todo[j] = todo[j], todo[i] })
+		workCh := make(chan roachpb.Span, len(todo))
+		for _, t := range todo {
+			workCh <- t.srcSpan
 		}
 		close(workCh)
-		return ctxgroup.GroupWorkers(ctx, cloneDataParallelism, func(ctx context.Context, _ int) error {
+		if err := ctxgroup.GroupWorkers(waveCtx, cloneDataParallelism, func(ctx context.Context, _ int) error {
 			for s := range workCh {
 				rangeCtx, rangeSp := tracing.ChildSpan(ctx, "clusterfork.clone-data-range")
 				err := sendCloneData(rangeCtx, db, s, srcPrefix, dstPrefix)
@@ -226,38 +243,32 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 				}
 			}
 			return nil
-		})
-	}); err != nil {
-		return err
+		}); err != nil {
+			waveSp.Finish()
+			return err
+		}
+		var next []todoItem
+		for _, t := range todo {
+			err := unlockWithRetry(waveCtx, db, t.dstStartKey)
+			if err == nil {
+				continue
+			}
+			if !strings.Contains(err.Error(), "clone is incomplete") {
+				waveSp.Finish()
+				return errors.Wrapf(err, "unlock destination range starting at %s", t.dstStartKey)
+			}
+			log.Dev.Infof(waveCtx,
+				"wave %d: unlock %s incomplete; re-queueing for next wave: %v",
+				wave, t.dstStartKey, err)
+			next = append(next, t)
+		}
+		waveSp.Finish()
+		todo = next
 	}
-
-	// 6. Unlock each destination range.
-	// TODO(dt): WaitForApplication-style verification per source-range
-	// replica before unlocking, so we don't unlock while a follower
-	// still has data to mount.
-	if err := step("unlock-dst", func(ctx context.Context) error {
-		dstDescs, err := scanRangeDescriptors(ctx, db, dstSpan)
-		if err != nil {
-			return errors.Wrap(err, "list destination ranges")
-		}
-		for _, dstDesc := range dstDescs {
-			startKey := dstDesc.StartKey.AsRawKey()
-			// Only unlock destination ranges that are inside the tenant
-			// span; the leftmost destination range may start before
-			// dstPrefix (e.g., a tenant boundary range), in which case
-			// AdminSetReplicaInconsistency on it would refuse "key is not
-			// the start of a range" — handled by clamping to dstPrefix.
-			if bytes.Compare(startKey, dstSpan.Key) < 0 {
-				startKey = dstSpan.Key
-			}
-			if err := setReplicaInconsistency(ctx, db, startKey, hlc.Timestamp{},
-				false /* ackAborted */, roachpb.Span{}); err != nil {
-				return errors.Wrapf(err, "unlock destination range starting at %s", startKey)
-			}
-		}
-		return nil
-	}); err != nil {
-		return err
+	if len(todo) > 0 {
+		return errors.Newf(
+			"after %d waves, %d destination ranges still incomplete; first: %s",
+			maxWaves, len(todo), todo[0].dstStartKey)
 	}
 
 	// 7. RevertRange the entire destination tenant span back to T.
@@ -351,6 +362,49 @@ func relocateWithRetry(
 			return nil
 		}
 		log.Dev.Infof(ctx, "AdminRelocateRange at %s failed (will retry): %v", startKey, lastErr)
+	}
+	return lastErr
+}
+
+// unlockWithRetry clears the InconsistencyLease on a range in a short
+// inner retry loop intended only for the in-window raft propagation
+// race: sendCloneData returns once the leaseholder applies, but
+// followers may take tens of milliseconds to catch up before the
+// unlock-time verifyAllReplicasComplete fanout sees them as complete.
+// A few short-backoff attempts close that window cheaply.
+//
+// Persistent incompleteness (e.g., a dst replica that wasn't
+// initialized on a target store at CloneData apply time, so the apply
+// silently no-op'd) is left for the caller's outer wave loop, which
+// re-fires CloneData and retries. Don't bloat this inner loop trying
+// to handle it — successive identical retries here can't make a missing
+// apply re-apply.
+//
+// The retry only fires on the "clone is incomplete" shape; other errors
+// (lease problems, descriptor changes, etc.) are returned immediately —
+// retrying those would mask real failures.
+func unlockWithRetry(ctx context.Context, db *kv.DB, startKey roachpb.Key) error {
+	opts := retry.Options{
+		InitialBackoff: 25 * time.Millisecond,
+		MaxBackoff:     250 * time.Millisecond,
+		Multiplier:     2,
+		MaxRetries:     3,
+	}
+	var lastErr error
+	for r := retry.StartWithCtx(ctx, opts); r.Next(); {
+		lastErr = setReplicaInconsistency(ctx, db, startKey, hlc.Timestamp{},
+			false /* ackAborted */, roachpb.Span{})
+		if lastErr == nil {
+			return nil
+		}
+		// "clone is incomplete on N/M replicas" comes from
+		// verifyAllReplicasComplete and resolves once raft propagates
+		// the CloneData apply to lagging followers. Match by substring
+		// rather than introducing a typed error to keep this scoped.
+		if !strings.Contains(lastErr.Error(), "clone is incomplete") {
+			return lastErr
+		}
+		log.Dev.Infof(ctx, "unlock at %s waiting for follower CloneData apply: %v", startKey, lastErr)
 	}
 	return lastErr
 }
