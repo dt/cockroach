@@ -197,6 +197,15 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 					"AdminRelocateRange dst range %s to colocate with src range %s",
 					dstDesc.RSpan(), src.RSpan())
 			}
+			// TODO(dt): set ReplicaDescriptor.PinnedToStore=true on every
+			// replica of the just-relocated dst range (and on the
+			// corresponding src range too, to stop src from drifting under
+			// us). This is the long-term replacement for the recolocate-on-
+			// incomplete-unlock loop in the wave handler — once the pin
+			// holds, the allocator skips discretionary remove-target
+			// candidates and we stop racing with rebalance. Needs a setter
+			// path (admin command or extension to AdminRelocateRange) that
+			// installs the bit and refreshes the in-memory replica state.
 		}
 		return nil
 	}); err != nil {
