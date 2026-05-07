@@ -997,6 +997,20 @@ func (a *Allocator) ComputeAction(
 			log.KvDistribution.Warningf(ctx, "allocator returned -1 priority for range %s: %v", desc, action)
 		}
 	}
+	// Suppress purely discretionary actions on a range that is mid-clone
+	// (InconsistentReplicas lease held). The cluster-fork orchestration
+	// places these ranges to colocate with their src ranges; a rebalance
+	// at this point would chase the stats-anomaly that exists during
+	// clone (cloned virtual SSTs make a range cheap to host on the src's
+	// stores but the allocator's logical-bytes view doesn't know that)
+	// and would keep racing the orchestration's recolocate. Necessary
+	// actions (replace dead, replace decommissioning, add for under-
+	// replication, finalize joint config, remove learner) are still
+	// allowed because they handle correctness, not balance.
+	if action == AllocatorConsiderRebalance && !desc.InconsistentReplicas.IsEmpty() &&
+		!roachpb.IsInconsistencyLeaseAborted(desc.InconsistentReplicas) {
+		return AllocatorNoop, AllocatorNoop.Priority()
+	}
 	return action, priority
 }
 
