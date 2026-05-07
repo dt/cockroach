@@ -111,6 +111,8 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 		// open-ended right-neighbor range that extends past the highest
 		// tenant) is excluded from what unlock-time completeness must
 		// satisfy. CloneData will only fill the in-tenant portion.
+		ctx, sp := tracing.ChildSpan(ctx, "clusterfork.set-inconsistency.lock")
+		defer sp.Finish()
 		return setReplicaInconsistency(ctx, db, dstPrefix, expiresAt,
 			false /* ackAborted */, dstSpan)
 	}); err != nil {
@@ -120,9 +122,13 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 	// 3. Pre-split destination to mirror source layout.
 	var srcDescs []roachpb.RangeDescriptor
 	if err := step("pre-split-dst", func(ctx context.Context) error {
-		var err error
-		srcDescs, err = scanRangeDescriptors(ctx, db, srcSpan)
-		if err != nil {
+		if err := func() error {
+			ctx, sp := tracing.ChildSpan(ctx, "clusterfork.scan-src-ranges")
+			defer sp.Finish()
+			var err error
+			srcDescs, err = scanRangeDescriptors(ctx, db, srcSpan)
+			return err
+		}(); err != nil {
 			return errors.Wrap(err, "list source ranges")
 		}
 		for _, srcDesc := range srcDescs {
@@ -131,7 +137,11 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 				continue
 			}
 			dstSplitKey := rewritePrefix(srcDesc.StartKey.AsRawKey(), srcPrefix, dstPrefix)
-			if err := db.AdminSplit(ctx, dstSplitKey, hlc.MaxTimestamp); err != nil {
+			if err := func() error {
+				ctx, sp := tracing.ChildSpan(ctx, "clusterfork.admin-split")
+				defer sp.Finish()
+				return db.AdminSplit(ctx, dstSplitKey, hlc.MaxTimestamp)
+			}(); err != nil {
 				return errors.Wrapf(err, "pre-split destination at %s", dstSplitKey)
 			}
 		}
@@ -146,8 +156,14 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 	// destination range to actually expose that data, its replicas must
 	// live on those same stores.
 	if err := step("relocate-dst", func(ctx context.Context) error {
-		dstDescsForRelocate, err := scanRangeDescriptors(ctx, db, dstSpan)
-		if err != nil {
+		var dstDescsForRelocate []roachpb.RangeDescriptor
+		if err := func() error {
+			ctx, sp := tracing.ChildSpan(ctx, "clusterfork.scan-dst-ranges")
+			defer sp.Finish()
+			var err error
+			dstDescsForRelocate, err = scanRangeDescriptors(ctx, db, dstSpan)
+			return err
+		}(); err != nil {
 			return errors.Wrap(err, "list destination ranges for relocate")
 		}
 		srcByDstStartKey := make(map[string]*roachpb.RangeDescriptor, len(srcDescs))
@@ -172,7 +188,11 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 			startKey := dstDesc.StartKey.AsRawKey()
 			voters := replicationTargets(src.Replicas().VoterDescriptors())
 			nonVoters := replicationTargets(src.Replicas().NonVoterDescriptors())
-			if err := relocateWithRetry(ctx, db, startKey, voters, nonVoters); err != nil {
+			if err := func() error {
+				ctx, sp := tracing.ChildSpan(ctx, "clusterfork.relocate-range")
+				defer sp.Finish()
+				return relocateWithRetry(ctx, db, startKey, voters, nonVoters)
+			}(); err != nil {
 				return errors.Wrapf(err,
 					"AdminRelocateRange dst range %s to colocate with src range %s",
 					dstDesc.RSpan(), src.RSpan())
@@ -223,24 +243,31 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 		todo = append(todo, todoItem{srcSpan: s, dstStartKey: dstStartKey})
 	}
 
+	// cloneOne wraps a single sendCloneData in a span. All clones (initial
+	// pass and per-wave re-fires) share the same span name so the trace
+	// aggregator rolls up total clone count + total clone wall time
+	// across phases; the parent step/wave span attributes phase.
 	cloneOne := func(ctx context.Context, srcSpan roachpb.Span) error {
-		rangeCtx, rangeSp := tracing.ChildSpan(ctx, "clusterfork.clone-data-range")
-		defer rangeSp.Finish()
-		if err := sendCloneData(rangeCtx, db, srcSpan, srcPrefix, dstPrefix); err != nil {
+		ctx, sp := tracing.ChildSpan(ctx, "clusterfork.clone-data")
+		defer sp.Finish()
+		if err := sendCloneData(ctx, db, srcSpan, srcPrefix, dstPrefix); err != nil {
 			return errors.Wrapf(err, "CloneData on source range %s", srcSpan)
 		}
 		return nil
 	}
-	cloneAll := func(ctx context.Context, items []todoItem) error {
+
+	if err := step("clone-data-initial", func(ctx context.Context) error {
 		// Shuffle so adjacent ranges (which tend to share leaseholders /
 		// storage paths) don't pile onto the same nodes when all workers
 		// start at once.
-		shuffled := make([]todoItem, len(items))
-		copy(shuffled, items)
+		shuffled := make([]roachpb.Span, len(todo))
+		for i, t := range todo {
+			shuffled[i] = t.srcSpan
+		}
 		rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
 		workCh := make(chan roachpb.Span, len(shuffled))
-		for _, t := range shuffled {
-			workCh <- t.srcSpan
+		for _, s := range shuffled {
+			workCh <- s
 		}
 		close(workCh)
 		return ctxgroup.GroupWorkers(ctx, cloneDataParallelism, func(ctx context.Context, _ int) error {
@@ -251,10 +278,6 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 			}
 			return nil
 		})
-	}
-
-	if err := step("clone-data-all", func(ctx context.Context) error {
-		return cloneAll(ctx, todo)
 	}); err != nil {
 		return err
 	}
@@ -277,7 +300,11 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 		close(workCh)
 		if err := ctxgroup.GroupWorkers(waveCtx, cloneDataParallelism, func(ctx context.Context, _ int) error {
 			for item := range workCh {
-				err := unlockWithRetry(ctx, db, item.dstStartKey)
+				err := func() error {
+					ctx, sp := tracing.ChildSpan(ctx, "clusterfork.unlock-one")
+					defer sp.Finish()
+					return unlockWithRetry(ctx, db, item.dstStartKey)
+				}()
 				if err == nil {
 					continue
 				}
@@ -391,10 +418,14 @@ func relocateWithRetry(
 	}
 	var lastErr error
 	for r := retry.StartWithCtx(ctx, opts); r.Next(); {
-		lastErr = db.AdminRelocateRange(
-			ctx, startKey, voters, nonVoters,
-			true, /* transferLeaseToFirstVoter */
-		)
+		lastErr = func() error {
+			ctx, sp := tracing.ChildSpan(ctx, "clusterfork.admin-relocate-range")
+			defer sp.Finish()
+			return db.AdminRelocateRange(
+				ctx, startKey, voters, nonVoters,
+				true, /* transferLeaseToFirstVoter */
+			)
+		}()
 		if lastErr == nil {
 			return nil
 		}
@@ -429,8 +460,12 @@ func unlockWithRetry(ctx context.Context, db *kv.DB, startKey roachpb.Key) error
 	}
 	var lastErr error
 	for r := retry.StartWithCtx(ctx, opts); r.Next(); {
-		lastErr = setReplicaInconsistency(ctx, db, startKey, hlc.Timestamp{},
-			false /* ackAborted */, roachpb.Span{})
+		lastErr = func() error {
+			ctx, sp := tracing.ChildSpan(ctx, "clusterfork.set-inconsistency.unlock")
+			defer sp.Finish()
+			return setReplicaInconsistency(ctx, db, startKey, hlc.Timestamp{},
+				false /* ackAborted */, roachpb.Span{})
+		}()
 		if lastErr == nil {
 			return nil
 		}
