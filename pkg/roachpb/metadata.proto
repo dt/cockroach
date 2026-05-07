@@ -143,6 +143,27 @@ message ReplicaDescriptor {
   // Type indicates which raft activities a replica participates in.
   optional ReplicaType type = 4 [(gogoproto.nullable) = false,
     (gogoproto.moretags) = "yaml:\"ReplicaType,omitempty\""];
+
+  // PinnedToStore, when true, marks this replica as not-eligible for
+  // discretionary removal by the allocator: any rebalance/over-rep
+  // remove that would target this replica is suppressed unless the
+  // replica's store is dead or decommissioning. Used by the cluster-
+  // fork orchestration to stop the allocator from drifting the
+  // colocated replicas it just placed (where colocation is essential
+  // for the virtually-cloned data sharing). Set per-replica during
+  // the relocate-dst step. Not inherited by split RHSes (the pin
+  // expresses an orchestration intent about a specific placement;
+  // a split product wasn't part of any orchestration decision).
+  //
+  // TODO(dt): pin lifecycle. Today there is no automatic clear path —
+  // the bit lives until the next relocate or until something else
+  // mutates the descriptor and drops it. The right shape is a per-
+  // store queue (or post-write-batch hook) that asks the local Pebble
+  // for "exclusive bytes in this replica's span" — i.e. physical bytes
+  // and virtual bytes whose backing has refcount 1 — and clears the
+  // pin once the replica has diverged enough from its shared backing
+  // that being on this store no longer carries the colocation benefit.
+  optional bool pinned_to_store = 5 [(gogoproto.nullable) = false];
 }
 
 // ReplicaIdent uniquely identifies a specific replica.

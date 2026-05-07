@@ -9,9 +9,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"strings"
 	"math/rand"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -195,6 +195,17 @@ func prepareSplitDescs(
 	// produces children that remain hands-off until the orchestration clears
 	// the bit (or KV's deadman cleanup kicks in).
 	rightDesc.InconsistentReplicas = leftDesc.InconsistentReplicas
+
+	// PinnedToStore is NOT inherited by the RHS: the pin expresses an
+	// orchestration intent about a specific placement decision, and a split
+	// product wasn't part of any such decision. The RHS may still benefit
+	// from colocation if the post-split data is largely shared, but the pin
+	// won't accidentally extend to it without an explicit re-pin.
+	repls := rightDesc.Replicas().Descriptors()
+	for i := range repls {
+		repls[i].PinnedToStore = false
+	}
+	rightDesc.SetReplicas(roachpb.MakeReplicaSet(repls))
 
 	return leftDesc, rightDesc
 }
