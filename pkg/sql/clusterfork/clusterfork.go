@@ -282,15 +282,43 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 		return err
 	}
 
+	// recolocateDst re-issues AdminRelocateRange on the dst range so its
+	// replicas live on the same stores as the src range *currently*
+	// occupies. Without this, src can rebalance after the initial
+	// relocate-dst step (we hold dst still via the InconsistencyLease but
+	// have no equivalent guard on src), in which case the per-store
+	// CloneData applies on src miss the now-orphaned dst replicas
+	// permanently — re-firing CloneData alone never converges. Called
+	// from the unlock wave's incomplete handler before the re-clone.
+	recolocateDst := func(ctx context.Context, item todoItem) error {
+		ctx, sp := tracing.ChildSpan(ctx, "clusterfork.recolocate-dst")
+		defer sp.Finish()
+		descs, err := scanRangeDescriptors(ctx, db, item.srcSpan)
+		if err != nil {
+			return errors.Wrapf(err, "scan src for %s", item.srcSpan)
+		}
+		if len(descs) == 0 {
+			return errors.Newf("no src descriptor covers %s", item.srcSpan)
+		}
+		// If src has split since we started, just colocate dst with the
+		// first covering range; subsequent waves' clone re-fires will
+		// handle the post-split layout via sendCloneData's
+		// RangeKeyMismatch recursion.
+		voters := replicationTargets(descs[0].Replicas().VoterDescriptors())
+		nonVoters := replicationTargets(descs[0].Replicas().NonVoterDescriptors())
+		return relocateWithRetry(ctx, db, item.dstStartKey, voters, nonVoters)
+	}
+
 	const maxWaves = 5
 	for wave := 0; wave < maxWaves && len(todo) > 0; wave++ {
 		waveCtx, waveSp := tracing.ChildSpan(ctx, fmt.Sprintf("clusterfork.unlock-wave-%d", wave))
 		// Each worker tries to unlock its item; on "clone is incomplete"
-		// after the inner retry, it re-fires CloneData for that item's
-		// src span and queues the item for the next wave. Other failure
-		// shapes fail-fast (cancels the group). The next-wave queue is
-		// guarded by a mutex; len(todo) makes the contention bounded
-		// and trivially small relative to the unlock RPC cost.
+		// after the inner retry, it re-relocates the dst range to src's
+		// current store layout (in case src rebalanced), re-fires
+		// CloneData, and queues the item for the next wave. Other
+		// failure shapes fail-fast (cancels the group). The next-wave
+		// queue is guarded by a mutex; len(todo) makes the contention
+		// bounded and trivially small relative to the RPC cost.
 		var nextMu syncutil.Mutex
 		var next []todoItem
 		workCh := make(chan todoItem, len(todo))
@@ -312,8 +340,11 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 					return errors.Wrapf(err, "unlock destination range starting at %s", item.dstStartKey)
 				}
 				log.Dev.Infof(ctx,
-					"wave %d: unlock %s incomplete; re-cloning and re-queueing: %v",
+					"wave %d: unlock %s incomplete; re-relocating + re-cloning + re-queueing: %v",
 					wave, item.dstStartKey, err)
+				if err := recolocateDst(ctx, item); err != nil {
+					return errors.Wrapf(err, "re-relocate dst %s", item.dstStartKey)
+				}
 				if err := cloneOne(ctx, item.srcSpan); err != nil {
 					return err
 				}
