@@ -197,15 +197,11 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 					"AdminRelocateRange dst range %s to colocate with src range %s",
 					dstDesc.RSpan(), src.RSpan())
 			}
-			// TODO(dt): set ReplicaDescriptor.PinnedToStore=true on every
-			// replica of the just-relocated dst range (and on the
-			// corresponding src range too, to stop src from drifting under
-			// us). This is the long-term replacement for the recolocate-on-
-			// incomplete-unlock loop in the wave handler — once the pin
-			// holds, the allocator skips discretionary remove-target
-			// candidates and we stop racing with rebalance. Needs a setter
-			// path (admin command or extension to AdminRelocateRange) that
-			// installs the bit and refreshes the in-memory replica state.
+			// relocateWithRetry pins the resulting replicas via
+			// AdminRelocateRangeAndPin, so the allocator won't drift them
+			// off these stores while the fork is in flight. TODO(dt): also
+			// pin src so it doesn't drift under us (would obviate the
+			// recolocate-on-incomplete-unlock loop in the wave handler).
 		}
 		return nil
 	}); err != nil {
@@ -471,8 +467,12 @@ func dstReplicasMatch(
 	startKey roachpb.Key,
 	voters, nonVoters []roachpb.ReplicationTarget,
 ) (bool, error) {
-	descs, err := scanRangeDescriptors(ctx, db,
-		roachpb.Span{Key: startKey, EndKey: startKey.Next()})
+	// Use RangeLookup directly rather than ScanMetaKVs over [k, k.Next()):
+	// for multi-column user keys, ScanMetaKVs's RangeMetaKey wrap can collapse
+	// the {k, k.Next()} pair to the same meta-encoded key, producing an
+	// "end key must be greater than start" rejection from the dist sender.
+	descs, _, err := kv.RangeLookup(ctx, db.NonTransactionalSender(),
+		startKey, kvpb.READ_UNCOMMITTED, 0 /* prefetchNum */, false /* reverse */)
 	if err != nil {
 		return false, err
 	}
@@ -536,7 +536,11 @@ func relocateWithRetry(
 		lastErr = func() error {
 			ctx, sp := tracing.ChildSpan(ctx, "clusterfork.admin-relocate-range")
 			defer sp.Finish()
-			return db.AdminRelocateRange(
+			// Pin the resulting replicas: the allocator will refuse to
+			// discretionarily remove them from these stores, which avoids
+			// the rebalancer racing the orchestration on a forked tenant
+			// whose virtually-cloned data lives on the chosen stores.
+			return db.AdminRelocateRangeAndPin(
 				ctx, startKey, voters, nonVoters,
 				true, /* transferLeaseToFirstVoter */
 			)
