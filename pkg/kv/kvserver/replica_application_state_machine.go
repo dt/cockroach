@@ -151,13 +151,12 @@ func (sm *replicaStateMachine) NewBatch() apply.Batch {
 	// NewBatch (if it needs to read its own writes, which is unlikely).
 	b.batch = r.store.batchFactory.NewBatch()
 
-	r.mu.RLock()
+	r.raftMu.AssertHeld()
 	b.state = r.shMu.state
 	b.truncState = r.asLogStorage().shMu.trunc
 	b.state.Stats = &sm.stats
 	*b.state.Stats = *r.shMu.state.Stats
-	b.closedTimestampSetter = r.mu.closedTimestampSetter
-	r.mu.RUnlock()
+	b.closedTimestampSetter = r.raftMu.closedTimestampSetter
 	b.start = timeutil.Now()
 	return b
 }
