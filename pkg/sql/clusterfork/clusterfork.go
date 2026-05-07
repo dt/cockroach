@@ -31,6 +31,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 )
@@ -182,16 +183,17 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 		return err
 	}
 
-	// 5+6. Wave loop: clone CloneData for each todo's src span, then
-	// unlock its dst range. Any dst range whose unlock fails with "clone
-	// is incomplete" goes back into the next wave; the re-fired CloneData
-	// gives any followers / late-initialized dst replicas another chance
-	// to mount the data. CloneData is destructive-then-install at the
-	// engine layer, so re-applying on already-complete replicas is safe
-	// while the dst is still locked.
+	// 5+6. Initial pass: fan CloneData out across every source range
+	// (parallel). Then enter a wave loop that fans unlock out across
+	// every dst range (parallel); for each dst range whose unlock fails
+	// with "clone is incomplete" after its own short inner retry, the
+	// worker re-fires CloneData for that range's src span and puts the
+	// item on the next wave's todo. Re-firing is idempotent on
+	// already-complete replicas (destructive-then-install under the
+	// lock); the missing replica gets another chance to land it.
 	//
 	// Each todo carries the src span that produces the dst range's
-	// content, plus the dst start key to unlock; the 1:1 mapping comes
+	// content plus the dst start key to unlock; the 1:1 mapping comes
 	// from the pre-split layout (each src range's prefix-rewritten start
 	// key was the split boundary on dst).
 	type todoItem struct {
@@ -221,53 +223,88 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 		todo = append(todo, todoItem{srcSpan: s, dstStartKey: dstStartKey})
 	}
 
-	const maxWaves = 5
-	for wave := 0; wave < maxWaves && len(todo) > 0; wave++ {
-		waveCtx, waveSp := tracing.ChildSpan(ctx, fmt.Sprintf("clusterfork.wave-%d", wave))
+	cloneOne := func(ctx context.Context, srcSpan roachpb.Span) error {
+		rangeCtx, rangeSp := tracing.ChildSpan(ctx, "clusterfork.clone-data-range")
+		defer rangeSp.Finish()
+		if err := sendCloneData(rangeCtx, db, srcSpan, srcPrefix, dstPrefix); err != nil {
+			return errors.Wrapf(err, "CloneData on source range %s", srcSpan)
+		}
+		return nil
+	}
+	cloneAll := func(ctx context.Context, items []todoItem) error {
 		// Shuffle so adjacent ranges (which tend to share leaseholders /
 		// storage paths) don't pile onto the same nodes when all workers
 		// start at once.
-		rand.Shuffle(len(todo), func(i, j int) { todo[i], todo[j] = todo[j], todo[i] })
-		workCh := make(chan roachpb.Span, len(todo))
-		for _, t := range todo {
+		shuffled := make([]todoItem, len(items))
+		copy(shuffled, items)
+		rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+		workCh := make(chan roachpb.Span, len(shuffled))
+		for _, t := range shuffled {
 			workCh <- t.srcSpan
 		}
 		close(workCh)
-		if err := ctxgroup.GroupWorkers(waveCtx, cloneDataParallelism, func(ctx context.Context, _ int) error {
+		return ctxgroup.GroupWorkers(ctx, cloneDataParallelism, func(ctx context.Context, _ int) error {
 			for s := range workCh {
-				rangeCtx, rangeSp := tracing.ChildSpan(ctx, "clusterfork.clone-data-range")
-				err := sendCloneData(rangeCtx, db, s, srcPrefix, dstPrefix)
-				rangeSp.Finish()
-				if err != nil {
-					return errors.Wrapf(err, "CloneData on source range %s", s)
+				if err := cloneOne(ctx, s); err != nil {
+					return err
 				}
+			}
+			return nil
+		})
+	}
+
+	if err := step("clone-data-all", func(ctx context.Context) error {
+		return cloneAll(ctx, todo)
+	}); err != nil {
+		return err
+	}
+
+	const maxWaves = 5
+	for wave := 0; wave < maxWaves && len(todo) > 0; wave++ {
+		waveCtx, waveSp := tracing.ChildSpan(ctx, fmt.Sprintf("clusterfork.unlock-wave-%d", wave))
+		// Each worker tries to unlock its item; on "clone is incomplete"
+		// after the inner retry, it re-fires CloneData for that item's
+		// src span and queues the item for the next wave. Other failure
+		// shapes fail-fast (cancels the group). The next-wave queue is
+		// guarded by a mutex; len(todo) makes the contention bounded
+		// and trivially small relative to the unlock RPC cost.
+		var nextMu syncutil.Mutex
+		var next []todoItem
+		workCh := make(chan todoItem, len(todo))
+		for _, t := range todo {
+			workCh <- t
+		}
+		close(workCh)
+		if err := ctxgroup.GroupWorkers(waveCtx, cloneDataParallelism, func(ctx context.Context, _ int) error {
+			for item := range workCh {
+				err := unlockWithRetry(ctx, db, item.dstStartKey)
+				if err == nil {
+					continue
+				}
+				if !strings.Contains(err.Error(), "clone is incomplete") {
+					return errors.Wrapf(err, "unlock destination range starting at %s", item.dstStartKey)
+				}
+				log.Dev.Infof(ctx,
+					"wave %d: unlock %s incomplete; re-cloning and re-queueing: %v",
+					wave, item.dstStartKey, err)
+				if err := cloneOne(ctx, item.srcSpan); err != nil {
+					return err
+				}
+				nextMu.Lock()
+				next = append(next, item)
+				nextMu.Unlock()
 			}
 			return nil
 		}); err != nil {
 			waveSp.Finish()
 			return err
 		}
-		var next []todoItem
-		for _, t := range todo {
-			err := unlockWithRetry(waveCtx, db, t.dstStartKey)
-			if err == nil {
-				continue
-			}
-			if !strings.Contains(err.Error(), "clone is incomplete") {
-				waveSp.Finish()
-				return errors.Wrapf(err, "unlock destination range starting at %s", t.dstStartKey)
-			}
-			log.Dev.Infof(waveCtx,
-				"wave %d: unlock %s incomplete; re-queueing for next wave: %v",
-				wave, t.dstStartKey, err)
-			next = append(next, t)
-		}
 		waveSp.Finish()
 		todo = next
 	}
 	if len(todo) > 0 {
 		return errors.Newf(
-			"after %d waves, %d destination ranges still incomplete; first: %s",
+			"after %d unlock waves, %d destination ranges still incomplete; first: %s",
 			maxWaves, len(todo), todo[0].dstStartKey)
 	}
 
