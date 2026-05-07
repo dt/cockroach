@@ -290,23 +290,50 @@ func ForkTenant(ctx context.Context, db *kv.DB, src, dst roachpb.TenantID, t hlc
 	// CloneData applies on src miss the now-orphaned dst replicas
 	// permanently — re-firing CloneData alone never converges. Called
 	// from the unlock wave's incomplete handler before the re-clone.
+	//
+	// Tolerates the "descriptor changed" race: the InconsistencyLease
+	// dance and parallel recolocates from sibling workers bump the dst
+	// descriptor's generation without changing its replica set, racing
+	// AdminRelocateRange's CAS. We pre-check (skip if dst already
+	// matches) and post-check (treat exhausted-retry-but-now-matches as
+	// success), so a benign race doesn't fail the whole fork.
 	recolocateDst := func(ctx context.Context, item todoItem) error {
 		ctx, sp := tracing.ChildSpan(ctx, "clusterfork.recolocate-dst")
 		defer sp.Finish()
-		descs, err := scanRangeDescriptors(ctx, db, item.srcSpan)
+		srcDescs, err := scanRangeDescriptors(ctx, db, item.srcSpan)
 		if err != nil {
 			return errors.Wrapf(err, "scan src for %s", item.srcSpan)
 		}
-		if len(descs) == 0 {
+		if len(srcDescs) == 0 {
 			return errors.Newf("no src descriptor covers %s", item.srcSpan)
 		}
 		// If src has split since we started, just colocate dst with the
 		// first covering range; subsequent waves' clone re-fires will
 		// handle the post-split layout via sendCloneData's
 		// RangeKeyMismatch recursion.
-		voters := replicationTargets(descs[0].Replicas().VoterDescriptors())
-		nonVoters := replicationTargets(descs[0].Replicas().NonVoterDescriptors())
-		return relocateWithRetry(ctx, db, item.dstStartKey, voters, nonVoters)
+		voters := replicationTargets(srcDescs[0].Replicas().VoterDescriptors())
+		nonVoters := replicationTargets(srcDescs[0].Replicas().NonVoterDescriptors())
+
+		matches, err := dstReplicasMatch(ctx, db, item.dstStartKey, voters, nonVoters)
+		if err != nil {
+			return errors.Wrapf(err, "scan dst for %s", item.dstStartKey)
+		}
+		if matches {
+			return nil
+		}
+		relocErr := relocateWithRetry(ctx, db, item.dstStartKey, voters, nonVoters)
+		if relocErr == nil {
+			return nil
+		}
+		// Re-scan: a sibling worker's relocate or the queue may have
+		// converged to the layout we wanted while we were retrying.
+		matches, scanErr := dstReplicasMatch(ctx, db, item.dstStartKey, voters, nonVoters)
+		if scanErr == nil && matches {
+			log.Dev.Infof(ctx, "recolocate-dst %s: relocate failed but post-check matches; treating as success: %v",
+				item.dstStartKey, relocErr)
+			return nil
+		}
+		return relocErr
 	}
 
 	const maxWaves = 5
@@ -424,6 +451,54 @@ func replicationTargets(descs []roachpb.ReplicaDescriptor) []roachpb.Replication
 		out[i] = roachpb.ReplicationTarget{NodeID: d.NodeID, StoreID: d.StoreID}
 	}
 	return out
+}
+
+// dstReplicasMatch returns whether the dst range starting at startKey has
+// exactly the given voters and non-voters (compared as sets of stores;
+// replica IDs and ordering ignored).
+func dstReplicasMatch(
+	ctx context.Context,
+	db *kv.DB,
+	startKey roachpb.Key,
+	voters, nonVoters []roachpb.ReplicationTarget,
+) (bool, error) {
+	descs, err := scanRangeDescriptors(ctx, db,
+		roachpb.Span{Key: startKey, EndKey: startKey.Next()})
+	if err != nil {
+		return false, err
+	}
+	if len(descs) == 0 {
+		return false, nil
+	}
+	dst := descs[0]
+	got := storeIDSet(replicationTargets(dst.Replicas().VoterDescriptors()))
+	want := storeIDSet(voters)
+	if !sameStoreIDSet(got, want) {
+		return false, nil
+	}
+	got = storeIDSet(replicationTargets(dst.Replicas().NonVoterDescriptors()))
+	want = storeIDSet(nonVoters)
+	return sameStoreIDSet(got, want), nil
+}
+
+func storeIDSet(targets []roachpb.ReplicationTarget) map[roachpb.StoreID]struct{} {
+	out := make(map[roachpb.StoreID]struct{}, len(targets))
+	for _, t := range targets {
+		out[t.StoreID] = struct{}{}
+	}
+	return out
+}
+
+func sameStoreIDSet(a, b map[roachpb.StoreID]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // relocateWithRetry calls AdminRelocateRange in a bounded retry loop.
