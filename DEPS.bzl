@@ -1860,7 +1860,7 @@ def go_deps():
         # and a new vendor bump runs.
         vcs = "git",
         remote = "https://github.com/dt/pebble",
-        commit = "873dee042b89ebc25ac23ce579771d4afed1b666",
+        commit = "907979239f519bda83f3558c06f6b4cbc8571944",
     )
     go_repository(
         name = "com_github_cockroachdb_redact",
