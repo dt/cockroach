@@ -1343,7 +1343,7 @@ func TestRefreshResourceGroupConfigInServerlessIsNoOp(t *testing.T) {
 		"refresh in serverless mode must not pre-create rg containers")
 
 	// But the holder DID record the change (it's caller-side state).
-	cfg := q.configHolder.GetOrDefault(rgGroupKey(highResourceGroupID))
+	cfg := q.configHolder.Snapshot().GetOrDefault(rgGroupKey(highResourceGroupID))
 	require.Equal(t, uint32(60), cfg.Weight)
 	require.True(t, cfg.MaxCPU)
 }

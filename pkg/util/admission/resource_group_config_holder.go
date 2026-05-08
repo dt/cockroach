@@ -13,65 +13,30 @@ import (
 	"github.com/cockroachdb/redact"
 )
 
-// This file owns the runtime-side, normalized representation of
-// per-resource-group configuration consumed by WorkQueue in Resource
-// Manager (RM) mode. Four representations are useful to keep distinct
-// when reasoning about RM config flow:
-//
-//  1. Per-group, un-normalized: the operator-supplied weight/maxCPU
-//     for a single resource group, before normalization. This will
-//     eventually be defined in protobuf so it can be serialized to a
-//     system table. Not yet present in this package.
-//  2. Set, un-normalized: the un-normalized configurations for an
-//     entire set of resource groups, requiring normalization across
-//     the set (e.g., weights summed to 100). Not yet present here.
-//  3. Per-group, normalized: ResourceGroupConfig below. Ready to be
-//     applied directly by WorkQueue without further derivation.
-//  4. Set, normalized: ResourceGroupConfigSet below. The full set of
-//     normalized per-group configs that ResourceGroupConfigHolder
-//     stores and that WorkQueue.applyConfigLocked walks.
-//
-// ResourceGroupConfigHolder is the source of truth for (4). It is
-// pure storage behind a mutex; no derivation happens here. Callers
-// are expected to perform any normalization (1)→(3), (2)→(4) before
-// calling Set.
-
-// ResourceGroupConfig is the normalized, per-resource-group state
-// WorkQueue applies in RM mode (representation 3 in the file
-// header). Callers must pre-normalize the values; the holder stores
-// them as-is.
+// ResourceGroupConfig is the per-group state WorkQueue applies when admitting
+// work in Resource Manager mode. Callers must pre-normalize the values; the
+// holder stores them as-is.
 type ResourceGroupConfig struct {
 	// Weight is the group's percentage share of node CPU, in [0, 100]. Used
-	// directly as the group's heap weight and as its burst-bucket refill share
-	// (Weight/100). Callers are expected to set weights that sum to 100 across
-	// the configured set. But the holder does not require this strictly as an
-	// invariant.
+	// directly as the heap weight and as the burst-bucket refill share
+	// (Weight/100). Callers should set weights that sum to 100 across the
+	// configured set; the holder does not enforce this.
 	Weight uint32
-	// MaxCPU=true forces burstQualification to canBurst regardless of the
-	// bucket utilization. The bucket itself is still tracked and refilled at
-	// Weight/100; MaxCPU only exempts the group from the bucket-fullness gate.
-	// Within the same canBurst qualification, groups remain ordered by
-	// used/weight.
+	// MaxCPU=true forces canBurst regardless of bucket utilization. The bucket
+	// is still refilled at Weight/100; MaxCPU only exempts the group from the
+	// bucket-fullness gate. Within the same canBurst qualification, groups
+	// remain ordered by used/weight.
 	MaxCPU bool
 }
 
-// ResourceGroupConfigSet is the normalized set of per-group configs
-// (representation 4 in the file header) keyed by groupKey. The
-// holder treats values of this type as immutable: once installed via
-// Set, the map is not mutated; once returned via Snapshot, callers
-// must not mutate it either.
-//
-// All keys must be rgKind groupKeys: the holder is RM-only.
+// ResourceGroupConfigSet is the set of per-group configs keyed by groupKey.
+// Once installed in the holder, callers must treat the map as read-only.
 type ResourceGroupConfigSet map[groupKey]ResourceGroupConfig
 
-// SafeFormat implements redact.SafeFormatter. Renders one entry per
-// line, sorted by id, e.g.:
+// SafeFormat renders one entry per line, sorted by id, e.g.:
 //
 //	rg1 weight=80 maxCPU=true
 //	rg2 weight=20 maxCPU=false
-//
-// Both groupKey and the numeric fields are redact-safe, so the whole
-// type is safe.
 func (s ResourceGroupConfigSet) SafeFormat(w redact.SafePrinter, _ rune) {
 	keys := make([]groupKey, 0, len(s))
 	for k := range s {
@@ -89,47 +54,59 @@ func (s ResourceGroupConfigSet) String() string {
 	return redact.StringWithoutMarkers(s)
 }
 
-// defaultRMResourceGroupConfig is the configuration used until an explicit
-// SetResourceGroupConfig call replaces it. The two hardcoded groups (high/low)
-// match the two outputs of priorityToResourceGroupKey.
+// GetOrDefault returns the config for k if installed, otherwise the
+// kind-appropriate fallback (rgKind: defaultRGGroupConfig; tenantKind:
+// defaultTenantGroupConfig). Used by WorkQueue's lazy group creation: an
+// Admit for a key without a corresponding groupInfo consults the set to
+// populate weight and maxCPU on the new groupInfo (burstFrac is computed
+// inline as Weight/100).
 //
-// TODO(wenyihu6): what's the reasonable weight here?
+// TODO(wenyihu6): collapse to a single per-kind-agnostic fallback once we can
+// align the rg and tenant defaults. The kind switch here is a transitional
+// shape; ideally GetOrDefault returns one default that works for any key.
+func (s ResourceGroupConfigSet) GetOrDefault(k groupKey) ResourceGroupConfig {
+	if cfg, ok := s[k]; ok {
+		return cfg
+	}
+	switch k.kind {
+	case rgKind:
+		return defaultRGGroupConfig
+	case tenantKind:
+		return defaultTenantGroupConfig
+	default:
+		panic(errors.AssertionFailedf("ResourceGroupConfigSet.GetOrDefault: invalid kind %s", k.kind))
+	}
+}
+
+// defaultRMResourceGroupConfig seeds the holder until an explicit Set
+// replaces it. The two ids match priorityToResourceGroupKey (high/low).
+//
+// TODO(wenyihu6): revisit weights once we have signal from real workloads.
 var defaultRMResourceGroupConfig = ResourceGroupConfigSet{
 	rgGroupKey(highResourceGroupID): {Weight: 80, MaxCPU: true},
 	rgGroupKey(lowResourceGroupID):  {Weight: 20, MaxCPU: false},
 }
 
-// defaultGroupConfig is the safety fallback returned by
-// ResourceGroupConfigHolder.GetOrDefault for keys that aren't in the
-// installed configuration. In current code the only producers of
-// rgKind keys are priorityToResourceGroupKey (high/low), and both
-// are seeded by defaultRMResourceGroupConfig at construction, so
-// this fallback is unreachable in steady state. It exists to keep
-// the lazy-create path on Admit total — if a future caller installs
-// a config that omits high/low (or introduces new rg IDs without
-// wiring them through Set first), Admit gets a usable weight rather
-// than a panic or a zero-weight group.
+// defaultRGGroupConfig is the safety fallback returned by GetOrDefault for
+// rgKind keys not in the installed configuration. In steady state this is
+// unreachable: the seed (defaultRMResourceGroupConfig) covers high/low. It
+// exists to keep Admit's lazy-create path total — if a caller installs a
+// config that omits a known rg ID, Admit gets a usable weight rather than a
+// zero-weight group. Weight=20 mirrors the low default; MaxCPU=false keeps
+// an unconfigured group from bypassing the burst-fullness gate.
 //
-// Weight=20 mirrors the low default: an unconfigured group should
-// participate in fair sharing but is treated as the lowest tier.
-// MaxCPU=false because we don't want an unconfigured group to bypass
-// the burst-fullness gate.
-//
-// TODO(wenyihu6): once SQL DDL (CREATE/ALTER RESOURCE GROUP) is
-// wired through, decide whether unknown rgKind IDs should be a hard
-// error instead of falling back here.
-var defaultGroupConfig = ResourceGroupConfig{
-	Weight: 20,
-	MaxCPU: false,
-}
+// TODO(wenyihu6): once SQL DDL (CREATE/ALTER RESOURCE GROUP) is wired
+// through, decide whether unknown rgKind IDs should be a hard error.
+var defaultRGGroupConfig = ResourceGroupConfig{Weight: 20, MaxCPU: false}
 
-// ResourceGroupConfigHolder owns the source-of-truth, normalized
-// per-resource-group configuration (representation 4 in the file
-// header) for RM mode. It is pure storage behind an RWMutex (reads
-// vastly outnumber writes: every Admit calls GetOrDefault, while Set
-// fires only on a config change).
-//
-// All keys must be rgKind groupKeys; Set asserts this on entry.
+// defaultTenantGroupConfig is the fallback for tenantKind keys: every tenant
+// gets defaultGroupWeight, since per-tenant weights are no longer
+// configurable. MaxCPU=false because tenants don't carry burst flags.
+var defaultTenantGroupConfig = ResourceGroupConfig{Weight: defaultGroupWeight, MaxCPU: false}
+
+// ResourceGroupConfigHolder owns the source-of-truth config set for RM mode.
+// It is pure storage behind an RWMutex; reads (every Admit) vastly outnumber
+// writes (config changes only).
 type ResourceGroupConfigHolder struct {
 	mu struct {
 		syncutil.RWMutex
@@ -138,32 +115,21 @@ type ResourceGroupConfigHolder struct {
 }
 
 // newResourceGroupConfigHolder constructs a holder seeded with
-// defaultRMResourceGroupConfig. The seed ensures that an immediate
-// Snapshot on a freshly-constructed holder returns the high/low
-// hardcoded resource groups, which is what WorkQueue applies on
-// first activation of RM mode (no separate "wait for first Set"
-// path).
+// defaultRMResourceGroupConfig, so a fresh Snapshot returns the high/low
+// hardcoded groups that WorkQueue applies on first RM-mode activation.
 func newResourceGroupConfigHolder() *ResourceGroupConfigHolder {
 	h := &ResourceGroupConfigHolder{}
 	h.Set(defaultRMResourceGroupConfig)
 	return h
 }
 
-// Set replaces the stored config wholesale. Keys present in the
-// prior config but absent from config are dropped.
+// Set replaces the stored config wholesale. Keys absent from config are
+// dropped.
 //
-// NB: caller is free to mutate config after Set returns, because
-// the input is copied before install.
-//
-// All keys must be rgKind; Set panics on any other kind. The holder
-// only stores RM-mode config and tenantKind/invalidKind keys would
-// silently route to the wrong code path in WorkQueue.
+// NB: caller may mutate config after Set returns; the input is copied.
 func (h *ResourceGroupConfigHolder) Set(config ResourceGroupConfigSet) {
 	cp := make(ResourceGroupConfigSet, len(config))
 	for k, v := range config {
-		if k.kind != rgKind {
-			panic(errors.AssertionFailedf("ResourceGroupConfigHolder.Set: non-rg key %s", k))
-		}
 		cp[k] = v
 	}
 	h.mu.Lock()
@@ -171,24 +137,9 @@ func (h *ResourceGroupConfigHolder) Set(config ResourceGroupConfigSet) {
 	h.mu.config = cp
 }
 
-// GetOrDefault returns the config for k if it is configured,
-// otherwise defaultGroupConfig. Used by WorkQueue's lazy group
-// creation in RM mode: an admit for a key without a corresponding
-// groupInfo consults the holder to populate weight and maxCPU for
-// the new groupInfo (burstFrac is computed inline as Weight/100).
-func (h *ResourceGroupConfigHolder) GetOrDefault(k groupKey) ResourceGroupConfig {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	if cfg, ok := h.mu.config[k]; ok {
-		return cfg
-	}
-	return defaultGroupConfig
-}
-
-// Snapshot returns the installed config map directly (no copy).
-//
-// NB: caller cannot alter the returned map because it shares the same map
-// reference as h.mu.config. May be stale after a subsequent Set.
+// Snapshot returns the installed config map directly (no copy). The map is
+// immutable post-install: a subsequent Set installs a fresh map rather than
+// mutating in place, so prior snapshots remain stable.
 func (h *ResourceGroupConfigHolder) Snapshot() ResourceGroupConfigSet {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

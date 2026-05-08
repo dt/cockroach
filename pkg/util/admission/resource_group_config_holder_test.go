@@ -31,7 +31,7 @@ func TestResourceGroupConfigHolder(t *testing.T) {
 
 	t.Run("get_or_default_unknown", w.Run(t, "get_or_default_unknown", func(t *testing.T) string {
 		h := newResourceGroupConfigHolder()
-		cfg := h.GetOrDefault(rgGroupKey(9999))
+		cfg := h.Snapshot().GetOrDefault(rgGroupKey(9999))
 		return fmt.Sprintf("weight=%d maxCPU=%t\n", cfg.Weight, cfg.MaxCPU)
 	}))
 }
@@ -84,7 +84,7 @@ func TestResourceGroupConfigHolderGet(t *testing.T) {
 	})
 	require.Equal(t,
 		ResourceGroupConfig{Weight: 75, MaxCPU: true},
-		h.GetOrDefault(rgGroupKey(highResourceGroupID)))
+		h.Snapshot().GetOrDefault(rgGroupKey(highResourceGroupID)))
 }
 
 // TestResourceGroupConfigHolderSnapshot verifies Snapshot's contract:

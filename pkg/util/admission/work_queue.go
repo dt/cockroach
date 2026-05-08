@@ -1575,20 +1575,12 @@ func (q *WorkQueue) SafeFormat(s redact.SafePrinter, _ rune) {
 // share equal weight.
 const defaultGroupWeight = 1
 
-// getGroupWeightLocked returns the heap weight and maxCPU flag for gKey.
-// rgKind reads both fields from the configHolder; tenantKind returns
-// (defaultGroupWeight, false) since per-tenant weights are no longer
-// configurable. q.mu must be held.
+// getGroupWeightLocked returns the heap weight and maxCPU flag for gKey from
+// the configHolder, which falls back to a kind-appropriate default for
+// unconfigured keys. q.mu must be held.
 func (q *WorkQueue) getGroupWeightLocked(gKey groupKey) (weight uint32, maxCPU bool) {
-	switch gKey.kind {
-	case rgKind:
-		cfg := q.configHolder.GetOrDefault(gKey)
-		return cfg.Weight, cfg.MaxCPU
-	case tenantKind:
-		return defaultGroupWeight, false
-	default:
-		panic(errors.AssertionFailedf("unknown group kind %s", gKey.kind))
-	}
+	cfg := q.configHolder.Snapshot().GetOrDefault(gKey)
+	return cfg.Weight, cfg.MaxCPU
 }
 
 // SetOverrideAllToBypassAdmission sets whether all work should bypass
