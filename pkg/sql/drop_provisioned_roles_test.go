@@ -8,120 +8,107 @@ package sql
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildFilterQuery(t *testing.T) {
+func TestBuildProvisionedRolesQuery(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
+	strPtr := func(s string) *string { return &s }
+	tsVal, err := tree.MakeDTimestampTZ(
+		timeutil.Now().Add(-7*24*time.Hour), time.Microsecond,
+	)
+	require.NoError(t, err)
+	// Use the truncated time from the datum for expected args.
+	ts := tsVal.Time
+
 	testCases := []struct {
-		name     string
-		node     DropProvisionedRolesNode
-		contains []string
-		excludes []string
+		name         string
+		source       *string
+		lastLogin    *tree.DTimestampTZ
+		limit        int64
+		contains     []string
+		excludes     []string
+		expectedArgs []any
 	}{
 		{
-			name: "no options — all provisioned users",
-			node: DropProvisionedRolesNode{},
+			name:  "limit only — all provisioned users",
+			limit: 10,
 			contains: []string{
 				"SELECT u.username FROM system.users AS u",
 				"PROVISIONSRC",
+				"LIMIT $1",
 			},
-			excludes: []string{"LIMIT", "estimated_last_login_time"},
+			excludes:     []string{"estimated_last_login_time"},
+			expectedArgs: []any{int64(10)},
 		},
 		{
-			name: "source filter",
-			node: DropProvisionedRolesNode{
-				options: &tree.DropProvisionedRolesOptions{
-					Source: tree.NewStrVal("ldap:ldap.example.com"),
-				},
-			},
+			name:   "source filter with limit",
+			source: strPtr("ldap:ldap.example.com"),
+			limit:  50,
 			contains: []string{
 				"PROVISIONSRC",
-				"ldap:ldap.example.com",
-				"src.value =",
+				"src.value = $1",
+				"LIMIT $2",
 			},
-			excludes: []string{"LIMIT", "estimated_last_login_time"},
+			excludes:     []string{"estimated_last_login_time"},
+			expectedArgs: []any{"ldap:ldap.example.com", int64(50)},
 		},
 		{
-			name: "last login before filter",
-			node: DropProvisionedRolesNode{
-				options: &tree.DropProvisionedRolesOptions{
-					LastLoginBefore: tree.NewStrVal("2025-01-01"),
-				},
-			},
+			name:      "last login before filter with limit",
+			lastLogin: tsVal,
+			limit:     100,
 			contains: []string{
 				"PROVISIONSRC",
-				"estimated_last_login_time <",
-				"2025-01-01",
-				"TIMESTAMPTZ",
+				"estimated_last_login_time IS NULL OR",
+				"estimated_last_login_time < $1",
+				"LIMIT $2",
 			},
-			excludes: []string{"LIMIT", "src.value ="},
+			excludes:     []string{"src.value ="},
+			expectedArgs: []any{ts, int64(100)},
 		},
 		{
-			name: "both filters",
-			node: DropProvisionedRolesNode{
-				options: &tree.DropProvisionedRolesOptions{
-					Source:          tree.NewStrVal("ldap:ad.corp.com"),
-					LastLoginBefore: tree.NewStrVal("2024-06-15"),
-				},
-			},
+			name:      "both filters with limit",
+			source:    strPtr("ldap:ad.corp.com"),
+			lastLogin: tsVal,
+			limit:     200,
 			contains: []string{
 				"PROVISIONSRC",
-				"ldap:ad.corp.com",
-				"estimated_last_login_time <",
-				"2024-06-15",
+				"src.value = $1",
+				"estimated_last_login_time < $2",
+				"LIMIT $3",
 			},
-			excludes: []string{"LIMIT"},
+			expectedArgs: []any{"ldap:ad.corp.com", ts, int64(200)},
 		},
 		{
-			name: "limit only",
-			node: DropProvisionedRolesNode{
-				limit: &tree.Limit{Count: tree.NewDInt(10)},
-			},
-			contains: []string{"PROVISIONSRC", "LIMIT 10"},
-			excludes: []string{"estimated_last_login_time", "src.value ="},
-		},
-		{
-			name: "source with limit",
-			node: DropProvisionedRolesNode{
-				options: &tree.DropProvisionedRolesOptions{
-					Source: tree.NewStrVal("oidc:okta.example.com"),
-				},
-				limit: &tree.Limit{Count: tree.NewDInt(5)},
-			},
+			name:      "max limit",
+			source:    strPtr("ldap:ldap.example.com"),
+			lastLogin: tsVal,
+			limit:     maxDropProvisionedRolesLimit,
 			contains: []string{
 				"PROVISIONSRC",
-				"oidc:okta.example.com",
-				"LIMIT 5",
+				"src.value = $1",
+				"estimated_last_login_time < $2",
+				"LIMIT $3",
 			},
-		},
-		{
-			name: "all options with limit",
-			node: DropProvisionedRolesNode{
-				options: &tree.DropProvisionedRolesOptions{
-					Source:          tree.NewStrVal("ldap:ldap.example.com"),
-					LastLoginBefore: tree.NewStrVal("2025-01-01"),
-				},
-				limit: &tree.Limit{Count: tree.NewDInt(100)},
-			},
-			contains: []string{
-				"PROVISIONSRC",
-				"ldap:ldap.example.com",
-				"estimated_last_login_time <",
-				"LIMIT 100",
+			expectedArgs: []any{
+				"ldap:ldap.example.com", ts, int64(maxDropProvisionedRolesLimit),
 			},
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			query, _ := tc.node.buildFilterQuery()
+			query, args := buildProvisionedRolesQuery(
+				tc.source, tc.lastLogin, tc.limit,
+			)
 			for _, substr := range tc.contains {
 				require.True(t, strings.Contains(query, substr),
 					"expected query to contain %q, got:\n%s", substr, query)
@@ -130,20 +117,23 @@ func TestBuildFilterQuery(t *testing.T) {
 				require.False(t, strings.Contains(query, substr),
 					"expected query to NOT contain %q, got:\n%s", substr, query)
 			}
+			if tc.expectedArgs != nil {
+				require.Equal(t, tc.expectedArgs, args,
+					"unexpected query args")
+			}
 		})
 	}
 }
 
-func TestBuildFilterQuerySQLInjection(t *testing.T) {
+func TestBuildProvisionedRolesQuerySQLInjection(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	n := DropProvisionedRolesNode{
-		options: &tree.DropProvisionedRolesOptions{
-			Source: tree.NewStrVal("ldap:evil' OR 1=1 --"),
-		},
-	}
-	query, _ := n.buildFilterQuery()
-	// The injected single quote must be escaped.
-	require.NotContains(t, query, "evil' OR")
+	malicious := "ldap:evil' OR 1=1 --"
+	query, args := buildProvisionedRolesQuery(&malicious, nil, 10)
+	// With parameterized queries, the malicious value must not appear
+	// in the query string — it is safely passed as a parameter.
+	require.NotContains(t, query, "evil")
+	require.Contains(t, query, "$1")
+	require.Len(t, args, 2) // source + limit
 }
