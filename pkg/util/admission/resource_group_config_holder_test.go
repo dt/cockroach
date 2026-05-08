@@ -6,34 +6,32 @@
 package admission
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/echotest"
 	"github.com/stretchr/testify/require"
 )
 
-// TestResourceGroupConfigHolder pins the constructor seed and the
-// unknown-ID fallback against goldens. The behavioral cases for Set,
-// GetOrDefault, and Snapshot live in adjacent TestResourceGroupConfigHolder*
-// functions.
+// TestResourceGroupConfigHolder covers the constructor seed and the
+// unknown-key fallback. The behavioral cases for Set and Snapshot live in
+// adjacent TestResourceGroupConfigHolder* functions.
 func TestResourceGroupConfigHolder(t *testing.T) {
-	w := echotest.NewWalker(t, datapathutils.TestDataPath(t, t.Name()))
-
-	t.Run("constructor_seed", w.Run(t, "constructor_seed", func(t *testing.T) string {
+	t.Run("constructor_seed", func(t *testing.T) {
 		h := newResourceGroupConfigHolder()
-		// ResourceGroupConfigSet.String formats the snapshot
-		// deterministically (sorted by id, one entry per line).
-		return h.Snapshot().String()
-	}))
+		require.Equal(t, defaultRMResourceGroupConfig, h.Snapshot())
+	})
 
-	t.Run("get_or_default_unknown", w.Run(t, "get_or_default_unknown", func(t *testing.T) string {
+	t.Run("get_or_default_unknown_rg", func(t *testing.T) {
 		h := newResourceGroupConfigHolder()
-		cfg := h.Snapshot().GetOrDefault(rgGroupKey(9999))
-		return fmt.Sprintf("weight=%d maxCPU=%t\n", cfg.Weight, cfg.MaxCPU)
-	}))
+		require.Equal(t, defaultRGGroupConfig,
+			h.Snapshot().GetOrDefault(rgGroupKey(9999)))
+	})
+
+	t.Run("get_or_default_unknown_tenant", func(t *testing.T) {
+		h := newResourceGroupConfigHolder()
+		require.Equal(t, defaultTenantGroupConfig,
+			h.Snapshot().GetOrDefault(tenantGroupKey(9999)))
+	})
 }
 
 // TestResourceGroupConfigHolderSet covers Set's wholesale-replace and
