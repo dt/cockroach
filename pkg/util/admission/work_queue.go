@@ -369,16 +369,14 @@ type WorkQueue struct {
 		overrideAllToBypassAdmission bool
 	}
 
-	// configHolder owns the per-resource-group config for RM mode.
-	// Only set when mode == usesCPUTimeTokens; nil otherwise. Reads
-	// happen only on RM-mode paths (gated by useResourceGroup, which
-	// itself is only set true in the CTT path), so non-CTT WorkQueues
-	// never reach a read site. See resource_group_config_holder.go
-	// for the type's lifecycle contract.
+	// configHolder owns the per-resource-group config for RM mode. Always
+	// non-nil; non-CTT WorkQueues hold their own holder but never read it
+	// because useResourceGroup stays false. See
+	// resource_group_config_holder.go for the type's lifecycle contract.
 	//
-	// Lock ordering: q.mu is acquired first, holder.mu second. Never
-	// the reverse. All current readers (Snapshot, GetOrDefault) are
-	// called from sites that already hold q.mu.
+	// Lock ordering: q.mu is acquired first, holder.mu second. Never the
+	// reverse. All current readers (Snapshot) are called from sites that
+	// already hold q.mu.
 	configHolder *ResourceGroupConfigHolder
 
 	logThreshold log.EveryN
@@ -412,10 +410,11 @@ type workQueueOptions struct {
 	// metrics. Only set when mode == usesCPUTimeTokens. See
 	// cpuTimeTokenMetrics for details.
 	perGroupAggMetrics *groupAggMetrics
-	// configHolder is the per-resource-group config for RM mode.
-	// Only set by the CTT grant coordinator; left nil by other
-	// call sites since non-CTT WorkQueues never reach an RM-mode
-	// read site. See WorkQueue.configHolder for the full contract.
+	// configHolder is the per-resource-group config for RM mode. The CTT
+	// grant coordinator passes a shared holder across both per-tier
+	// WorkQueues; other call sites leave this nil and initWorkQueue
+	// allocates a fresh holder. See WorkQueue.configHolder for the full
+	// contract.
 	configHolder *ResourceGroupConfigHolder
 
 	// timeSource can be set to non-nil for tests. If nil,
@@ -498,6 +497,9 @@ func initWorkQueue(
 	q.metrics = metrics
 	q.stopCh = stopCh
 	q.configHolder = opts.configHolder
+	if q.configHolder == nil {
+		q.configHolder = newResourceGroupConfigHolder()
+	}
 	q.perGroupAggMetrics = opts.perGroupAggMetrics
 	q.timeSource = timeSource
 	q.knobs = knobs
