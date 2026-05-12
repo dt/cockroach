@@ -235,6 +235,12 @@ func (ss *StatementStore) Start(ctx context.Context, stopper *stop.Stopper) {
 
 	if err := stopper.RunAsyncTask(ctx,
 		"statement-store-writer", func(ctx context.Context) {
+			// Tie ctx to the stopper's quiesce signal so that an in-flight
+			// flush is interrupted at shutdown. Without this, drainAndFlush
+			// can block indefinitely inside the internal executor (e.g. on
+			// RAC2 flow control) and prevent the stopper from quiescing.
+			ctx, cancel := stopper.WithCancelOnQuiesce(ctx)
+			defer cancel()
 			ticker := time.NewTicker(flushInterval.Get(&ss.settings.SV))
 			defer ticker.Stop()
 			for {
