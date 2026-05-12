@@ -33,10 +33,10 @@ import (
 )
 
 func registerOnlineRestorePerfBreakdown(r registry.Registry) {
-	for _, sp := range []onlineRestoreSpecs{
-		{
+	for _, useFullBackupAOST := range []bool{true, false} {
+		sp := onlineRestoreSpecs{
 			restoreSpecs: restoreSpecs{
-				hardware: makeHardwareSpecs(hardwareSpecs{workloadNode: true}),
+				hardware: makeHardwareSpecs(hardwareSpecs{nodes: 5}),
 				backup: backupSpecs{
 					cloud:   spec.GCE,
 					fixture: SmallFixture,
@@ -45,26 +45,30 @@ func registerOnlineRestorePerfBreakdown(r registry.Registry) {
 				skipFingerprint: true,
 				timeout:         2 * time.Hour,
 				suites:          registry.Suites(registry.Nightly),
-				namePrefix:      "online/perf-breakdown",
 			},
 			workload: tpccRestore{
 				opts: tpccRunOpts{waitFraction: 0, workers: 100, maxRate: 300},
 			},
-		},
-	} {
+		}
+		if useFullBackupAOST {
+			sp.namePrefix = "online/perf-breakdown/full-only"
+		} else {
+			sp.namePrefix = "online/perf-breakdown/with-inc"
+		}
 		sp.initTestName()
+		useFullBackup := useFullBackupAOST
 		r.Add(registry.TestSpec{
-			Name:              sp.testName,
-			Owner:             registry.OwnerDisasterRecovery,
-			Benchmark:         true,
-			Cluster:           sp.hardware.makeClusterSpecs(r),
-			Timeout:           sp.timeout,
-			EncryptionSupport: registry.EncryptionAlwaysDisabled,
-			CompatibleClouds:  sp.backup.CompatibleClouds(),
-			Suites:            sp.suites,
-			Skip:              "experimental: run manually for online restore perf investigation",
+			Name:                      sp.testName,
+			Owner:                     registry.OwnerDisasterRecovery,
+			Benchmark:                 true,
+			Cluster:                   sp.hardware.makeClusterSpecs(r),
+			Timeout:                   sp.timeout,
+			EncryptionSupport:         registry.EncryptionAlwaysDisabled,
+			CompatibleClouds:          sp.backup.CompatibleClouds(),
+			Suites:                    sp.suites,
+			TestSelectionOptOutSuites: sp.suites,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-				runOnlineRestorePerfBreakdown(ctx, t, c, sp)
+				runOnlineRestorePerfBreakdown(ctx, t, c, sp, useFullBackup)
 			},
 		})
 	}
@@ -102,6 +106,9 @@ type clusterMetricsSnapshot struct {
 	LogicalBytes  uint64 `json:"logical_bytes"`
 	ExternalBytes uint64 `json:"external_bytes"`
 	RangeCount    int    `json:"range_count"`
+	L0SizeBytes   int64  `json:"l0_size_bytes"`
+	L6SizeBytes   int64  `json:"l6_size_bytes"`
+	ReadAmp       int    `json:"read_amp"`
 }
 
 // stallPointReport is the output for a single stall point measurement.
@@ -120,7 +127,11 @@ type breakdownReport struct {
 }
 
 func runOnlineRestorePerfBreakdown(
-	ctx context.Context, t test.Test, c cluster.Cluster, sp onlineRestoreSpecs,
+	ctx context.Context,
+	t test.Test,
+	c cluster.Cluster,
+	sp onlineRestoreSpecs,
+	useFullBackupAOST bool,
 ) {
 	rd := makeRestoreDriver(ctx, t, c, sp.restoreSpecs)
 	rd.prepareCluster(ctx)
@@ -129,13 +140,19 @@ func runOnlineRestorePerfBreakdown(
 	require.NoError(t, err)
 	defer db.Close()
 
+	// Override the AOST to use the full backup end time if requested,
+	// ensuring a single-layer restore with no incremental overlap.
+	if useFullBackupAOST {
+		defer disableUseBackupsWithIDs(ctx, t, db)()
+		aostCmd := sp.restoreSpecs.getFullBackupEndTimeCmd(ctx, t, rd.collectionURI)
+		var fullAOST string
+		require.NoError(t, db.QueryRowContext(ctx, aostCmd).Scan(&fullAOST))
+		rd.aost = fullAOST
+		t.L().Printf("overriding AOST to full backup end time: %s", fullAOST)
+	}
+
 	clusterSettings := []string{
-		"kv.queue.process.guaranteed_time_budget='1h'",
-		"admission.disk_bandwidth_tokens.elastic.enabled=false",
-		"admission.kv.enabled=false",
-		"admission.sql_kv_response.enabled=false",
-		"kv.consistency_queue.enabled=false",
-		"kv.range_merge.skip_external_bytes.enabled=true",
+		// Speed up job adoption so resume/pause transitions are fast.
 		"jobs.registry.interval.adopt='5s'",
 	}
 	for _, setting := range clusterSettings {
@@ -187,10 +204,8 @@ func runOnlineRestorePerfBreakdown(
 	require.NoError(t, err)
 	t.L().Printf("initial external bytes: %d", initialExternalBytes)
 
-	// Start workload in background, writing JSON output to a file on the
-	// workload node.
-	workloadNode := sp.hardware.getWorkloadNode()
 	crdbNodes := sp.hardware.getCRDBNodes()
+	workloadNode := crdbNodes[0]
 	workloadOutputFile := "/tmp/workload_output.json"
 	bundleBaseDir := "/tmp/bundles"
 
@@ -662,47 +677,48 @@ func writePerfSummaryStats(t test.Test, c cluster.Cluster, report breakdownRepor
 		return
 	}
 
-	// Find the 100% (baseline) stall point.
-	var baseline *stallPointReport
-	for i := range report.StallPoints {
-		if report.StallPoints[i].DownloadPct >= 1.0 {
-			baseline = &report.StallPoints[i]
-			break
-		}
-	}
-	if baseline == nil {
-		t.L().Printf("warning: no 100%% baseline found, skipping perf summary stats")
-		return
-	}
-
-	baselineByType := make(map[string]querySnapshot)
-	for _, q := range baseline.Queries {
-		baselineByType[q.Type] = q
-	}
-
 	var stats roachtestutil.AggregatedPerfMetrics
 
 	for _, sp := range report.StallPoints {
 		for _, q := range sp.Queries {
 			stats = append(stats, &roachtestutil.AggregatedMetric{
-				Name:  fmt.Sprintf("%s_p99_%s", q.Type, sp.Label),
-				Value: roachtestutil.MetricPoint(q.P99Ms),
-				Unit:  "ms",
+				Name:  fmt.Sprintf("%s_p50_%s", q.Type, sp.Label),
+				Value: roachtestutil.MetricPoint(q.P50Ms), Unit: "ms",
 			})
 			stats = append(stats, &roachtestutil.AggregatedMetric{
-				Name:           fmt.Sprintf("%s_qps_%s", q.Type, sp.Label),
-				Value:          roachtestutil.MetricPoint(q.Throughput),
-				Unit:           "qps",
+				Name:  fmt.Sprintf("%s_p95_%s", q.Type, sp.Label),
+				Value: roachtestutil.MetricPoint(q.P95Ms), Unit: "ms",
+			})
+			stats = append(stats, &roachtestutil.AggregatedMetric{
+				Name:  fmt.Sprintf("%s_p99_%s", q.Type, sp.Label),
+				Value: roachtestutil.MetricPoint(q.P99Ms), Unit: "ms",
+			})
+			stats = append(stats, &roachtestutil.AggregatedMetric{
+				Name:  fmt.Sprintf("%s_qps_%s", q.Type, sp.Label),
+				Value: roachtestutil.MetricPoint(q.Throughput), Unit: "qps",
 				IsHigherBetter: true,
 			})
-			if bq, ok := baselineByType[q.Type]; ok && bq.P99Ms > 0 {
-				ratio := q.P99Ms / bq.P99Ms
-				stats = append(stats, &roachtestutil.AggregatedMetric{
-					Name:  fmt.Sprintf("%s_p99_ratio_%s", q.Type, sp.Label),
-					Value: roachtestutil.MetricPoint(ratio),
-					Unit:  "x",
-				})
-			}
+		}
+		if sp.ClusterMetrics != nil {
+			m := sp.ClusterMetrics
+			stats = append(stats,
+				&roachtestutil.AggregatedMetric{
+					Name:  fmt.Sprintf("l0_size_mb_%s", sp.Label),
+					Value: roachtestutil.MetricPoint(float64(m.L0SizeBytes) / (1024 * 1024)), Unit: "MB",
+				},
+				&roachtestutil.AggregatedMetric{
+					Name:  fmt.Sprintf("l6_size_mb_%s", sp.Label),
+					Value: roachtestutil.MetricPoint(float64(m.L6SizeBytes) / (1024 * 1024)), Unit: "MB",
+				},
+				&roachtestutil.AggregatedMetric{
+					Name:  fmt.Sprintf("read_amp_%s", sp.Label),
+					Value: roachtestutil.MetricPoint(float64(m.ReadAmp)),
+				},
+				&roachtestutil.AggregatedMetric{
+					Name:  fmt.Sprintf("external_gb_%s", sp.Label),
+					Value: roachtestutil.MetricPoint(float64(m.ExternalBytes) / (1024 * 1024 * 1024)), Unit: "GB",
+				},
+			)
 		}
 	}
 
@@ -728,8 +744,21 @@ func collectClusterMetrics(
 	_ = db.QueryRowContext(ctx,
 		`SELECT sum(logical_bytes)::INT FROM crdb_internal.kv_store_status`).Scan(&m.LogicalBytes)
 
-	l.Printf("cluster metrics: external_bytes=%d logical_bytes=%d ranges=%d",
-		m.ExternalBytes, m.LogicalBytes, m.RangeCount)
+	_ = db.QueryRowContext(ctx,
+		`SELECT COALESCE(sum((metrics->>'storage.l0-level-size')::FLOAT)::INT, 0)
+		 FROM crdb_internal.kv_store_status`).Scan(&m.L0SizeBytes)
+
+	_ = db.QueryRowContext(ctx,
+		`SELECT COALESCE(sum((metrics->>'storage.l6-level-size')::FLOAT)::INT, 0)
+		 FROM crdb_internal.kv_store_status`).Scan(&m.L6SizeBytes)
+
+	_ = db.QueryRowContext(ctx,
+		`SELECT COALESCE(max((metrics->>'rocksdb.read-amplification')::FLOAT)::INT, 0)
+		 FROM crdb_internal.kv_store_status`).Scan(&m.ReadAmp)
+
+	l.Printf("cluster metrics: external_bytes=%d logical_bytes=%d ranges=%d l0=%dMB l6=%dMB read_amp=%d",
+		m.ExternalBytes, m.LogicalBytes, m.RangeCount,
+		m.L0SizeBytes/(1024*1024), m.L6SizeBytes/(1024*1024), m.ReadAmp)
 	return m
 }
 
