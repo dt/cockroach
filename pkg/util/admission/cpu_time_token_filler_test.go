@@ -97,9 +97,8 @@ type testModel struct {
 }
 
 type testBurstManager struct {
-	tokens           int64
-	burstFrac        float64
-	useResourceGroup bool
+	tokens    int64
+	burstFrac float64
 }
 
 func (m *testBurstManager) refillGroupBurstBuckets(rate, cap float64) {
@@ -112,10 +111,6 @@ func (m *testBurstManager) refillGroupBurstBuckets(rate, cap float64) {
 	if m.tokens < -capacity/4 {
 		m.tokens = -capacity / 4
 	}
-}
-
-func (m *testBurstManager) setUseResourceGroup(enabled bool) {
-	m.useResourceGroup = enabled
 }
 
 func (m *testModel) init() {}
@@ -606,33 +601,6 @@ func TestResetIntervalReturnsMode(t *testing.T) {
 	ctx := context.Background()
 	mode := allocator.resetInterval(ctx)
 	require.Equal(t, serverlessMode, mode)
-}
-
-// TestConfigureQueue verifies that configureQueue calls
-// setUseResourceGroup with the correct value based on the
-// current strategy's mode.
-func TestConfigureQueue(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	mgr := &testBurstManager{}
-	queues := [numResourceTiers]workQueueIForAllocator{
-		testTier0: mgr,
-		testTier1: &testBurstManager{},
-	}
-	allocator := cpuTimeTokenAllocator{
-		queues:   queues,
-		strategy: &serverlessStrategy{},
-	}
-
-	// Serverless mode -> useResourceGroup=false.
-	allocator.configureQueue()
-	require.False(t, mgr.useResourceGroup)
-
-	// RM mode -> useResourceGroup=true.
-	allocator.strategy = &rmStrategy{}
-	allocator.configureQueue()
-	require.True(t, mgr.useResourceGroup)
 }
 
 // TestRMStrategyComputeTargets verifies that computeTargets reads the

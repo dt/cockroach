@@ -327,19 +327,6 @@ type WorkQueue struct {
 		// Periodically GC'd by gcGroupsResetUsedAndUpdateEstimators.
 		groups map[groupKey]*groupInfo
 
-		// useResourceGroup, when true, derives the resource group ID from
-		// WorkInfo.Priority instead of WorkInfo.TenantID. Used in Resource
-		// Manager mode to split work into foreground (priority >= NormalPri)
-		// and background (priority < NormalPri) groups.
-		//
-		// This is a bool rather than a live read of the cluster setting so
-		// that mode transitions can update this and all components have a
-		// consistent view.
-		//
-		// TODO(wenyihu): support mode transitions and consider
-		// replacing this with an enum for serverless vs RM mode.
-		useResourceGroup bool
-
 		// The highest epoch that is closed.
 		closedEpochThreshold int64
 		// Following values are copied from the cluster settings.
@@ -353,16 +340,8 @@ type WorkQueue struct {
 		// applyConfigLocked pre-create. Both fields take this value, so
 		// new groups start full and can burst immediately.
 		//
-		// Serverless mode: refreshed every 1ms by refillBurstBuckets to
-		// match the uniform per-tenant capacity.
-		//
-		// RM mode: left at zero. RM capacities scale by per-group weight,
-		// so no queue-wide value is correct. Seeding with the unscaled
-		// 100% value would briefly grant unearned burst budget to
-		// non-MAX_CPU groups; seeding with zero only throttles a brand-
-		// new group for at most one refill tick (1ms), which is the safer
-		// failure mode. refillRMGroupBurstBuckets installs the correct
-		// per-group capacity on the next tick.
+		// Refreshed every 1ms by refillGroupBurstBuckets to
+		// int64(cap * defaultTenantGroupConfig.BurstFrac).
 		burstBucketCapacity int64
 		// overrideAllToBypassAdmission, when true, causes all work to bypass
 		// admission control. Used by CPU time token AC.
@@ -370,9 +349,8 @@ type WorkQueue struct {
 	}
 
 	// configHolder owns the per-resource-group config for RM mode. Always
-	// non-nil; non-CTT WorkQueues hold their own holder but never read it
-	// because useResourceGroup stays false. See
-	// resource_group_config_holder.go for the type's lifecycle contract.
+	// non-nil. See resource_group_config_holder.go for the type's
+	// lifecycle contract.
 	//
 	// Lock ordering: q.mu is acquired first, holder.mu second. Never the
 	// reverse. All current readers (Snapshot) are called from sites that
@@ -732,9 +710,8 @@ type AdmitResponse struct {
 	requestedCount int64
 }
 
-// Resource group IDs used in Resource Manager mode when
-// useResourceGroup is true. Work is split into two groups based on
-// WorkInfo.Priority.
+// Resource group IDs used in Resource Manager mode. Work is split into
+// two groups based on WorkInfo.Priority.
 const (
 	// highResourceGroupID is used for work with priority >= NormalPri.
 	highResourceGroupID uint64 = 1
@@ -752,30 +729,15 @@ func priorityToResourceGroupKey(pri admissionpb.WorkPriority) groupKey {
 	return rgGroupKey(lowResourceGroupID)
 }
 
-// setUseResourceGroup enables or disables priority-based resource
-// group derivation. When enabled, the resource group ID is derived
-// from WorkInfo.Priority instead of WorkInfo.TenantID.
-//
-// When enabled is true, the current holder snapshot is also applied
-// to q.mu.groups via applyConfigLocked.
-func (q *WorkQueue) setUseResourceGroup(enabled bool) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	q.mu.useResourceGroup = enabled
-	if enabled {
-		q.applyConfigLocked(q.configHolder.Snapshot())
-	}
-}
-
 // groupKeyForWorkLocked returns the composite groupKey for the given
-// WorkInfo. In RM mode (useResourceGroup), the key is derived from
-// WorkInfo.Priority with kind=rgKind; otherwise it is the TenantID
-// with kind=tenantKind.
+// WorkInfo. In RM mode (cpuTimeTokenACMode == resourceManagerMode), the
+// key is derived from WorkInfo.Priority with kind=rgKind; otherwise it
+// is the TenantID with kind=tenantKind.
 //
 // REQUIRES: q.mu is held.
 func (q *WorkQueue) groupKeyForWorkLocked(info WorkInfo) groupKey {
 	q.mu.AssertHeld()
-	if q.mu.useResourceGroup {
+	if cpuTimeTokenACMode.Get(&q.settings.SV) == resourceManagerMode {
 		return priorityToResourceGroupKey(info.Priority)
 	}
 	return tenantGroupKey(info.TenantID.ToUint64())
@@ -946,8 +908,8 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (AdmitResponse, er
 					)
 				}
 				// Replicated work is a Serverless-mode-only path
-				// (StoreWorkQueue runs in usesTokens mode and never sets
-				// useResourceGroup), so gKey is always tenant-keyed.
+				// (StoreWorkQueue runs in usesTokens mode), so gKey is
+				// always tenant-keyed.
 				q.onAdmittedReplicatedWork.admittedReplicatedWork(
 					roachpb.MustMakeTenantID(gKey.id),
 					info.Priority,
@@ -1576,12 +1538,11 @@ func (q *WorkQueue) SetOverrideAllToBypassAdmission(override bool) {
 // refreshResourceGroupConfig pushes the current holder snapshot onto
 // q.mu.groups via applyConfigLocked. Call this after configHolder.Set
 // to make a config change visible to in-flight admits. No-op when the
-// queue is not in RM mode; setUseResourceGroup(true) replays the
-// holder snapshot on the next mode entry.
+// queue is not in RM mode.
 func (q *WorkQueue) refreshResourceGroupConfig() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.mu.useResourceGroup {
+	if cpuTimeTokenACMode.Get(&q.settings.SV) == resourceManagerMode {
 		q.applyConfigLocked(q.configHolder.Snapshot())
 	}
 }
@@ -1594,15 +1555,15 @@ func (q *WorkQueue) refreshResourceGroupConfig() {
 // Entries absent from the snapshot are left in q.mu.groups and drain
 // via the GC path.
 //
-// q.mu must be held. Callers: setUseResourceGroup at RM-mode entry,
-// and refreshResourceGroupConfig on a config change.
+// q.mu must be held. Caller: refreshResourceGroupConfig on a config
+// change.
 //
 // New-vs-existing asymmetry: a freshly pre-created groupInfo seeds
 // cpuTimeTokenEstimator and cpuTimeBurstBucket.capacity from package
 // state (defaultCPUTimeTokenEstimator, q.mu.burstBucketCapacity)
 // rather than the snapshot, so the estimator seed and bucket
 // capacity stick at their first-creation values. The bucket capacity
-// catches up on the next refillRMGroupBurstBuckets tick (within 1ms);
+// catches up on the next refillGroupBurstBuckets tick (within 1ms);
 // a Set that changes MaxCPU lands instantly while the implied bucket
 // capacity trails briefly.
 func (q *WorkQueue) applyConfigLocked(config ResourceGroupConfigSet) {
@@ -1787,9 +1748,8 @@ func (ps *priorityStates) getFIFOPriorityThresholdAndReset(
 }
 
 // groupInfo is the per-group information in the groupHeap. In Serverless mode,
-// the resource group ID is the tenant ID. In RM mode with useResourceGroup,
-// the resource group ID is derived from the work's priority (see
-// priorityToResourceGroupKey).
+// the resource group ID is the tenant ID. In RM mode, the resource group ID is
+// derived from the work's priority (see priorityToResourceGroupKey).
 type groupInfo struct {
 	// groupKey is the composite (id, kind) under which this groupInfo
 	// is stored in WorkQueue.mu.groups.

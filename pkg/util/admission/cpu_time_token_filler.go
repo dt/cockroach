@@ -153,20 +153,9 @@ type cpuTimeTokenFiller struct {
 	//  2. refill rates and granter buckets - the delta between old and
 	//     new rates is applied to the granter, so token levels converge
 	//     to the new mode within one interval.
-	//  3. WorkQueue.useResourceGroup - set via configureQueue, which
-	//     switches group ID derivation between TenantID (serverless)
-	//     and Priority (resource manager).
-	//  4. activeMode (this field) - stored last, after refill and queue
-	//     configuration are complete, so that GetKVWorkQueue routes to
-	//     the correct queue only after the queues are ready.
-	//
-	// TODO(wenyihu6): All four steps can be simplified once
-	// serverless mode is mapped to a single WorkQueue with resource
-	// groups. Serverless tenants would just be resource groups with
-	// specific configs (e.g. system tenant = maxCPU group), so the
-	// rmStrategy handles both modes and the strategy swap (step 1),
-	// queue config toggle (step 3), and routing via activeMode
-	// (step 4) all become unnecessary.
+	//  3. activeMode (this field) - stored last, after refill is
+	//     complete, so that GetKVWorkQueue routes to the correct queue
+	//     only after the queues are ready.
 	activeMode atomic.Int64
 }
 
@@ -570,11 +559,9 @@ func (a *cpuTimeTokenAllocator) resetInterval(ctx context.Context) cpuTimeTokenM
 	// real strategy - the constructor defaults offMode to
 	// serverlessMode, and GetKVWorkQueue handles the off case before
 	// reaching activeMode routing.
-	modeChanged := false
 	newMode := cpuTimeTokenACMode.Get(&a.settings.SV)
 	if newMode != offMode && newMode != a.strategy.mode() {
 		a.strategy = a.newStrategy(newMode)
-		modeChanged = true
 	}
 
 	targets := a.strategy.computeTargets(&a.settings.SV)
@@ -619,17 +606,6 @@ func (a *cpuTimeTokenAllocator) resetInterval(ctx context.Context) cpuTimeTokenM
 		}
 	}
 
-	// Apply queue configuration after refill is complete, so admission
-	// behavior only changes once tokens are in place. The returned mode
-	// is stored into filler.activeMode by the caller, which is what
-	// GetKVWorkQueue reads to route work. If activeMode were updated
-	// before tokens and queue config, callers could route work into a
-	// CTT queue that has stale token levels or wrong group derivation
-	// (e.g. TenantID instead of Priority), breaking fair-sharing until
-	// the next interval.
-	if modeChanged {
-		a.configureQueue()
-	}
 	return a.strategy.mode()
 }
 
@@ -652,20 +628,6 @@ func (a *cpuTimeTokenAllocator) newStrategy(mode cpuTimeTokenMode) modeStrategy 
 	default:
 		panic(errors.AssertionFailedf("unknown cpuTimeTokenMode: %d", mode))
 	}
-}
-
-// configureQueue applies mode-specific settings to the WorkQueue.
-// Called from the constructor after the initial strategy is installed and from
-// resetInterval on a strategy swap.
-//
-// TODO(wenyihu6): in a follow-on change, this should also trigger an apply of
-// the configHolder snapshot to groupInfo so that derived per-group state
-// (weight, MaxCPU, burstFrac) lands before the cycle's refill runs.
-//
-// TODO(wenyihu6): becomes unnecessary once serverless tenants are
-// modeled as resource groups in a single WorkQueue.
-func (a *cpuTimeTokenAllocator) configureQueue() {
-	a.queues[0].setUseResourceGroup(a.strategy.mode() == resourceManagerMode)
 }
 
 // refillGranter increments per-bucket refill metrics, then delegates
@@ -699,8 +661,6 @@ type workQueueIForAllocator interface {
 	// refillGroupBurstBuckets refills every group's burst bucket,
 	// scaling rate and cap by each group's burstFrac.
 	refillGroupBurstBuckets(rate, cap float64)
-	// setUseResourceGroup toggles RM-style group derivation.
-	setUseResourceGroup(enabled bool)
 }
 
 // cpuTimeModel abstracts cpuTimeLinearModel for testing.

@@ -169,7 +169,8 @@ func TestSetResourceGroupConfigViaCoord(t *testing.T) {
 	// Force RM mode so the apply path runs synchronously when refresh
 	// is invoked. Without this, refresh is a no-op and the test would
 	// only assert the holder write.
-	rmQueue.setUseResourceGroup(true)
+	ctx := context.Background()
+	cpuTimeTokenACMode.Override(ctx, &settings.SV, resourceManagerMode)
 
 	// Public API call. This is the only thing under test.
 	cpuCoords.SetResourceGroupConfig(ResourceGroupConfigSet{
