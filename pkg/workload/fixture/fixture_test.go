@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package workloadccl_test
+package fixture_test
 
 import (
 	"context"
@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/cockroachdb/cockroach/pkg/backup"
 	"github.com/cockroachdb/cockroach/pkg/base"
-	_ "github.com/cockroachdb/cockroach/pkg/ccl"
-	"github.com/cockroachdb/cockroach/pkg/ccl/workloadccl"
+	_ "github.com/cockroachdb/cockroach/pkg/cloud/impl" // registers cloud storage providers (including http)
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -30,6 +30,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload"
+	"github.com/cockroachdb/cockroach/pkg/workload/fixture"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
 )
@@ -111,7 +112,7 @@ func TestFixture(t *testing.T) {
 		skip.IgnoreLint(t, "COCKROACH_FIXTURE_TEST_STORAGE_PROVIDER env var must be set")
 	}
 
-	config := workloadccl.FixtureConfig{
+	config := fixture.Config{
 		StorageProvider: storageProvider,
 		AuthParams:      authParams,
 		Bucket:          bucket,
@@ -119,7 +120,7 @@ func TestFixture(t *testing.T) {
 		CSVServerURL:    "",
 		TableStats:      false,
 	}
-	es, err := workloadccl.GetStorage(ctx, config)
+	es, err := fixture.GetStorage(ctx, config)
 	if err != nil {
 		t.Fatalf(`%+v`, err)
 	}
@@ -135,11 +136,11 @@ func TestFixture(t *testing.T) {
 		t.Fatalf(`%+v`, err)
 	}
 
-	if _, err := workloadccl.GetFixture(ctx, es, config, gen); !testutils.IsError(err, `non zero files`) {
+	if _, err := fixture.Get(ctx, es, config, gen); !testutils.IsError(err, `non zero files`) {
 		t.Fatalf(`expected "non zero files" error but got: %+v`, err)
 	}
 
-	fixtures, err := workloadccl.ListFixtures(ctx, es, config)
+	fixtures, err := fixture.List(ctx, es, config)
 	if err != nil {
 		t.Fatalf(`%+v`, err)
 	}
@@ -148,17 +149,17 @@ func TestFixture(t *testing.T) {
 	}
 
 	const filesPerNode = 1
-	fixture, err := workloadccl.MakeFixture(ctx, db, es, config, gen, filesPerNode)
+	f, err := fixture.Make(ctx, db, es, config, gen, filesPerNode)
 	if err != nil {
 		t.Fatalf(`%+v`, err)
 	}
 
-	_, err = workloadccl.MakeFixture(ctx, db, es, config, gen, filesPerNode)
+	_, err = fixture.Make(ctx, db, es, config, gen, filesPerNode)
 	if !testutils.IsError(err, `already exists`) {
 		t.Fatalf(`expected 'already exists' error got: %+v`, err)
 	}
 
-	fixtures, err = workloadccl.ListFixtures(ctx, es, config)
+	fixtures, err = fixture.List(ctx, es, config)
 	if err != nil {
 		t.Fatalf(`%+v`, err)
 	}
@@ -167,7 +168,7 @@ func TestFixture(t *testing.T) {
 	}
 
 	sqlDB.Exec(t, `CREATE DATABASE test`)
-	if err := workloadccl.RestoreFixture(ctx, db, fixture, `test`, false); err != nil {
+	if err := fixture.Restore(ctx, db, f, `test`, false); err != nil {
 		t.Fatalf(`%+v`, err)
 	}
 	sqlDB.CheckQueryResults(t,
@@ -212,7 +213,7 @@ func TestImportFixture(t *testing.T) {
 	const filesPerNode = 1
 
 	sqlDB.Exec(t, `CREATE DATABASE ingest`)
-	_, err := workloadccl.ImportFixture(
+	_, err := fixture.Import(
 		ctx, db, gen, `ingest`, filesPerNode, false, /* injectStats */
 		``, /* csvServer */
 	)
@@ -256,7 +257,7 @@ func TestImportFixtureCSVServer(t *testing.T) {
 	const filesPerNode = 1
 	const noInjectStats = false
 	sqlDB.Exec(t, `CREATE DATABASE d`)
-	_, err := workloadccl.ImportFixture(
+	_, err := fixture.Import(
 		ctx, db, gen, `d`, filesPerNode, noInjectStats, ts.URL,
 	)
 	require.NoError(t, err)
@@ -286,7 +287,7 @@ func TestImportFixtureNodeCount(t *testing.T) {
 	require.NoError(t, gen.Flags().Parse([]string{flag}))
 
 	sqlDB.Exec(t, "CREATE DATABASE ingest")
-	_, err := workloadccl.ImportFixture(
+	_, err := fixture.Import(
 		ctx, db, gen, "ingest", filesPerNode, false, /* injectStats */
 		``, /* csvServer */
 	)

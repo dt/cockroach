@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package workloadccl
+package fixture
 
 import (
 	"context"
@@ -25,7 +25,7 @@ const storageError = `failed to create google cloud client ` +
 
 // GetStorage returns a cloud storage implementation
 // The caller is responsible for closing it.
-func GetStorage(ctx context.Context, cfg FixtureConfig) (cloud.ExternalStorage, error) {
+func GetStorage(ctx context.Context, cfg Config) (cloud.ExternalStorage, error) {
 	switch cfg.StorageProvider {
 	case "gs", "s3", "azure":
 	default:

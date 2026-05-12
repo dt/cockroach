@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package cliccl
+package fixturescmd
 
 import (
 	"context"
@@ -11,25 +11,25 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/ccl/workloadccl"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload"
 	workloadcli "github.com/cockroachdb/cockroach/pkg/workload/cli"
+	"github.com/cockroachdb/cockroach/pkg/workload/fixture"
 	"github.com/cockroachdb/cockroach/pkg/workload/workloadsql"
 	"github.com/cockroachdb/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
-var defaultConfig = workloadccl.FixtureConfig{
+var defaultConfig = fixture.Config{
 	StorageProvider: "gs",
 	AuthParams:      "AUTH=implicit",
 	Bucket:          `cockroach-fixtures-us-east1`,
 	Basename:        `workload`,
 }
 
-func config() workloadccl.FixtureConfig {
+func config() fixture.Config {
 	config := defaultConfig
 	if len(*providerOverride) > 0 {
 		config.StorageProvider = *providerOverride
@@ -63,11 +63,11 @@ var fixturesMakeCmd = workloadcli.SetCmdDefaults(&cobra.Command{
 })
 var fixturesLoadCmd = workloadcli.SetCmdDefaults(&cobra.Command{
 	Use:   `load`,
-	Short: `load a fixture into a running cluster. An enterprise license is required.`,
+	Short: `load a fixture into a running cluster via RESTORE`,
 })
 var fixturesImportCmd = workloadcli.SetCmdDefaults(&cobra.Command{
 	Use:   `import`,
-	Short: `import a fixture into a running cluster. An enterprise license is NOT required.`,
+	Short: `import a fixture into a running cluster via IMPORT`,
 })
 var fixturesURLCmd = workloadcli.SetCmdDefaults(&cobra.Command{
 	Use:   `url`,
@@ -183,17 +183,17 @@ func init() {
 
 func fixturesList(_ *cobra.Command, _ []string) error {
 	ctx := context.Background()
-	es, err := workloadccl.GetStorage(ctx, config())
+	es, err := fixture.GetStorage(ctx, config())
 	if err != nil {
 		return err
 	}
 	defer func() { _ = es.Close() }()
-	fixtures, err := workloadccl.ListFixtures(ctx, es, config())
+	fixtures, err := fixture.List(ctx, es, config())
 	if err != nil {
 		return err
 	}
-	for _, fixture := range fixtures {
-		fmt.Println(fixture)
+	for _, f := range fixtures {
+		fmt.Println(f)
 	}
 	return nil
 }
@@ -219,7 +219,7 @@ func (f filteringGenerator) Tables() []workload.Table {
 
 func fixturesMake(gen workload.Generator, urls []string, _ string) error {
 	ctx := context.Background()
-	gcs, err := workloadccl.GetStorage(ctx, config())
+	gcs, err := fixture.GetStorage(ctx, config())
 	if err != nil {
 		return err
 	}
@@ -244,11 +244,11 @@ func fixturesMake(gen workload.Generator, urls []string, _ string) error {
 		}
 	}
 	filesPerNode := *fixturesMakeFilesPerNode
-	fixture, err := workloadccl.MakeFixture(ctx, sqlDB, gcs, config(), gen, filesPerNode)
+	f, err := fixture.Make(ctx, sqlDB, gcs, config(), gen, filesPerNode)
 	if err != nil {
 		return err
 	}
-	for _, table := range fixture.Tables {
+	for _, table := range f.Tables {
 		log.Dev.Infof(ctx, `stored backup %s`, table.BackupURI)
 	}
 	return nil
@@ -257,7 +257,7 @@ func fixturesMake(gen workload.Generator, urls []string, _ string) error {
 // restoreDataLoader is an InitialDataLoader implementation that loads data with
 // RESTORE.
 type restoreDataLoader struct {
-	fixture  workloadccl.Fixture
+	fixture  fixture.Fixture
 	database string
 }
 
@@ -267,7 +267,7 @@ func (l restoreDataLoader) InitialDataLoad(
 ) (int64, error) {
 	log.Dev.Infof(ctx, "starting restore of %d tables", len(gen.Tables()))
 	start := timeutil.Now()
-	err := workloadccl.RestoreFixture(ctx, db, l.fixture, l.database, true /* injectStats */)
+	err := fixture.Restore(ctx, db, l.fixture, l.database, true /* injectStats */)
 	if err != nil {
 		return 0, errors.Wrap(err, `restoring fixture`)
 	}
@@ -282,7 +282,7 @@ func (l restoreDataLoader) InitialDataLoad(
 
 func fixturesLoad(gen workload.Generator, urls []string, dbName string) error {
 	ctx := context.Background()
-	gcs, err := workloadccl.GetStorage(ctx, config())
+	gcs, err := fixture.GetStorage(ctx, config())
 	if err != nil {
 		return err
 	}
@@ -296,12 +296,12 @@ func fixturesLoad(gen workload.Generator, urls []string, dbName string) error {
 		return err
 	}
 
-	fixture, err := workloadccl.GetFixture(ctx, gcs, config(), gen)
+	f, err := fixture.Get(ctx, gcs, config(), gen)
 	if err != nil {
 		return errors.Wrap(err, `finding fixture`)
 	}
 
-	l := restoreDataLoader{fixture: fixture, database: dbName}
+	l := restoreDataLoader{fixture: f, database: dbName}
 	if _, err := workloadsql.Setup(ctx, sqlDB, gen, l); err != nil {
 		return err
 	}
@@ -328,7 +328,7 @@ func fixturesImport(gen workload.Generator, urls []string, dbName string) error 
 		return err
 	}
 
-	l := workloadccl.ImportDataLoader{
+	l := fixture.ImportDataLoader{
 		FilesPerNode: *fixturesImportFilesPerNode,
 		InjectStats:  *fixturesImportInjectStats,
 		CSVServer:    *fixturesMakeImportCSVServerURL,
@@ -357,7 +357,7 @@ func fixturesURL(gen workload.Generator) func(*cobra.Command, []string) {
 			}
 		}
 
-		fmt.Println(workloadccl.FixtureURL(config(), gen))
+		fmt.Println(fixture.URL(config(), gen))
 		return nil
 	})
 }

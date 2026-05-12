@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package allccl
+package all
 
 import (
 	"context"
@@ -15,8 +15,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	_ "github.com/cockroachdb/cockroach/pkg/ccl"
-	"github.com/cockroachdb/cockroach/pkg/ccl/workloadccl"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -26,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/workload"
+	"github.com/cockroachdb/cockroach/pkg/workload/fixture"
 	"github.com/cockroachdb/cockroach/pkg/workload/workloadsql"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
@@ -75,7 +74,7 @@ func runImportFixtureTest(
 	defer s.Stopper().Stop(ctx)
 	sqlutils.MakeSQLRunner(db).Exec(t, `CREATE DATABASE d`)
 
-	l := workloadccl.ImportDataLoader{}
+	l := fixture.ImportDataLoader{}
 	if _, err := workloadsql.Setup(ctx, db, gen, l); err != nil {
 		t.Fatalf(`%+v`, err)
 	}

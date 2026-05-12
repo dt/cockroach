@@ -3,14 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package allccl
-
-// We import each of the workloads below, so a single import of this package
-// enables registration of all workloads.
+// Package all aggregates blank imports of every workload generator so a
+// single import enables registration of all workloads.
+package all
 
 import (
 	// workloads
-	_ "github.com/cockroachdb/cockroach/pkg/ccl/workloadccl/roachmartccl"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/bank"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/bulkingest"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/conflict"
@@ -28,6 +26,7 @@ import (
 	_ "github.com/cockroachdb/cockroach/pkg/workload/querylog"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/queue"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/rand"
+	_ "github.com/cockroachdb/cockroach/pkg/workload/roachmart"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/schemachange"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/sqlsmith"
 	_ "github.com/cockroachdb/cockroach/pkg/workload/sqlstats"

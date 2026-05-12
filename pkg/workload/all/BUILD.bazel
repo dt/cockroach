@@ -1,12 +1,11 @@
 load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
-    name = "allccl",
+    name = "all",
     srcs = ["all.go"],
-    importpath = "github.com/cockroachdb/cockroach/pkg/ccl/workloadccl/allccl",
+    importpath = "github.com/cockroachdb/cockroach/pkg/workload/all",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/ccl/workloadccl/roachmartccl",
         "//pkg/workload/bank",
         "//pkg/workload/bulkingest",
         "//pkg/workload/conflict",
@@ -24,6 +23,7 @@ go_library(
         "//pkg/workload/querylog",
         "//pkg/workload/queue",
         "//pkg/workload/rand",
+        "//pkg/workload/roachmart",
         "//pkg/workload/schemachange",
         "//pkg/workload/sqlsmith",
         "//pkg/workload/sqlstats",
@@ -41,18 +41,18 @@ go_library(
 )
 
 go_test(
-    name = "allccl_test",
+    name = "all_test",
     size = "large",
     srcs = [
         "all_test.go",
         "main_test.go",
     ],
-    embed = [":allccl"],
+    embed = [":all"],
     shard_count = 5,
     deps = [
+        "//pkg/backup",
         "//pkg/base",
-        "//pkg/ccl",
-        "//pkg/ccl/workloadccl",
+        "//pkg/cloud/impl:cloudimpl",
         "//pkg/col/coldata",
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",
@@ -67,6 +67,7 @@ go_test(
         "//pkg/util/log",
         "//pkg/util/randutil",
         "//pkg/workload",
+        "//pkg/workload/fixture",
         "//pkg/workload/workloadsql",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_stretchr_testify//require",

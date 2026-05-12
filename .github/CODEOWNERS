@@ -417,7 +417,6 @@
 /pkg/ccl/testccl/workload/schemachange/ @cockroachdb/sql-foundations
 #!/pkg/ccl/testutilsccl/     @cockroachdb/test-eng-noreview
 /pkg/ccl/testutilsccl/alter_* @cockroachdb/sql-foundations
-/pkg/ccl/workloadccl/        @cockroachdb/test-eng
 #!/pkg/clusterversion/       @cockroachdb/kv-prs-noreview @cockroachdb/dev-inf-noreview @cockroachdb/test-eng-noreview
 /pkg/clusterversion/cockroach_versions.go @cockroachdb/release-eng-prs @cockroachdb/upgrade-prs
 /pkg/cmd/allocsim/           @cockroachdb/kv-prs
