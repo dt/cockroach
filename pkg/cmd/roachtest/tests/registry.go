@@ -139,6 +139,7 @@ func RegisterTests(r registry.Registry) {
 	registerRestore(r)
 	registerRestoreNodeShutdown(r)
 	registerOnlineRestorePerf(r)
+	registerOnlineRestorePerfBreakdown(r)
 	registerFastRestorePerf(r)
 	registerOnlineRestoreCorrectness(r)
 	registerRoachmart(r)
