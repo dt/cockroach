@@ -305,6 +305,10 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		res.Excise = nil
 	}
 
+	if res.StoreMutation != nil {
+		res.StoreMutation = nil
+	}
+
 	if res.Split != nil {
 		// Splits require a new HardState to be written for the new RHS replica,
 		// atomically with the main batch. This cannot be constructed at evaluation

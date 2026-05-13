@@ -291,6 +291,28 @@ message ReplicatedEvalResult {
   // replicated range-id local key.
   bool do_timely_application_to_all_replicas = 29;
 
+  // ReplicatedStoreMutation describes a Raft-replicated operation that mutates
+  // the store's LSM directly rather than through a WriteBatch. Each replica
+  // independently applies the mutation to its own physical SSTs.
+  message ReplicatedStoreMutation {
+    oneof mutation {
+      ApplyMVCCHistoryTruncation mvcc_history_truncation = 1;
+    }
+  }
+
+  // ApplyMVCCHistoryTruncation instructs each replica to apply a per-SST MVCC
+  // suffix mask, hiding all point and range keys with timestamps in the range
+  // (timestamp, upper_bound] across the given span. The upper bound prevents
+  // stale retries (e.g. from DistSender) from masking writes that landed after
+  // the original request was sent.
+  message ApplyMVCCHistoryTruncation {
+    roachpb.Span span = 1 [(gogoproto.nullable) = false];
+    util.hlc.Timestamp timestamp = 2 [(gogoproto.nullable) = false];
+    util.hlc.Timestamp upper_bound = 3 [(gogoproto.nullable) = false];
+  }
+
+  ReplicatedStoreMutation store_mutation = 31;
+
   reserved 1, 5, 7, 9, 10, 14, 15, 16, 19, 10001 to 10013;
 }
 

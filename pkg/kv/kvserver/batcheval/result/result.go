@@ -380,6 +380,13 @@ func (p *Result) MergeAndDestroy(q Result) error {
 	}
 	q.Replicated.Excise = nil
 
+	if p.Replicated.StoreMutation == nil {
+		p.Replicated.StoreMutation = q.Replicated.StoreMutation
+	} else if q.Replicated.StoreMutation != nil {
+		return errors.AssertionFailedf("conflicting StoreMutation")
+	}
+	q.Replicated.StoreMutation = nil
+
 	if p.Replicated.MVCCHistoryMutation == nil {
 		p.Replicated.MVCCHistoryMutation = q.Replicated.MVCCHistoryMutation
 	} else if q.Replicated.MVCCHistoryMutation != nil {

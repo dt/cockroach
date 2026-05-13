@@ -17,6 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 	"golang.org/x/time/rate"
@@ -229,6 +230,12 @@ func (b *appBatch) runPostAddTriggers(
 		}
 	}
 
+	if sm := res.StoreMutation; sm != nil {
+		if err := applyStoreMutation(ctx, env.eng, sm); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -307,4 +314,31 @@ func (b *appBatch) addAppliedStateToBatch(ctx context.Context) error {
 	// lease index along with the MVCC stats, all in one key.
 	b.asAlloc = b.state.ToRangeAppliedState()
 	return b.sl.SetRangeAppliedState(ctx, b.batch.State(), &b.asAlloc)
+}
+
+// applyStoreMutation applies a ReplicatedStoreMutation to the engine. Each
+// variant of the mutation maps to a direct engine operation that bypasses the
+// WriteBatch.
+func applyStoreMutation(
+	ctx context.Context,
+	eng storage.Engine,
+	sm *kvserverpb.ReplicatedEvalResult_ReplicatedStoreMutation,
+) error {
+	switch m := sm.Mutation.(type) {
+	case *kvserverpb.ReplicatedEvalResult_ReplicatedStoreMutation_MvccHistoryTruncation:
+		t := m.MvccHistoryTruncation
+		lower := mvccencoding.EncodeMVCCTimestampSuffix(t.Timestamp)
+		upper := mvccencoding.EncodeMVCCTimestampSuffix(t.UpperBound)
+		log.VEventf(ctx, 2,
+			"applying MVCC history truncation on %s for (%s, %s]",
+			t.Span, t.Timestamp, t.UpperBound)
+		if err := eng.ApplySuffixMask(ctx, t.Span, lower, upper); err != nil {
+			return errors.Wrapf(err,
+				"applying MVCC history truncation on %s for (%s, %s]",
+				t.Span, t.Timestamp, t.UpperBound)
+		}
+		return nil
+	default:
+		return errors.AssertionFailedf("unknown store mutation type: %T", sm.Mutation)
+	}
 }
