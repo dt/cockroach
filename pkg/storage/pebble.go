@@ -2374,6 +2374,17 @@ func (p *Pebble) Excise(ctx context.Context, span roachpb.Span) error {
 	return p.db.Excise(ctx, rawSpan)
 }
 
+// ApplySuffixMask implements the Engine interface.
+func (p *Pebble) ApplySuffixMask(
+	ctx context.Context, span roachpb.Span, lower, upper []byte,
+) error {
+	rawSpan := pebble.KeyRange{
+		Start: EngineKey{Key: span.Key}.Encode(),
+		End:   EngineKey{Key: span.EndKey}.Encode(),
+	}
+	return p.db.DeleteSuffixRange(ctx, rawSpan, lower, upper)
+}
+
 // IngestLocalFiles implements the Engine interface.
 func (p *Pebble) IngestLocalFiles(ctx context.Context, paths []string) error {
 	return p.db.Ingest(ctx, paths)
