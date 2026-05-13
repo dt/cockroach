@@ -168,6 +168,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/producer"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationutils"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/streamclient"
@@ -763,6 +764,11 @@ func maybeRevertToCutoverTimestamp(
 	}
 	// On cutover, replication has stopped so therefore should set replicated time to 0
 	p.ExecCfg().JobRegistry.MetricsStruct().StreamIngest.(*Metrics).ReplicatedTimeSeconds.Update(0)
+	var revertOpts revert.RevertSpansFanoutOpts
+	if p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V26_3_MVCCHistoryTruncation) &&
+		revert.UseMVCCHistoryTruncation.Get(p.ExecCfg().SV()) {
+		revertOpts.UseHistoryTruncation = true
+	}
 	if err := revert.RevertSpansFanout(ctx,
 		p.ExecCfg().DB,
 		p,
@@ -772,7 +778,8 @@ func maybeRevertToCutoverTimestamp(
 		// GC threshold. Why aren't we?
 		false, /* ignoreGCThreshold */
 		batchSize,
-		progUpdater.onCompletedCallback); err != nil {
+		progUpdater.onCompletedCallback,
+		revertOpts); err != nil {
 		return cutoverTimestamp, false, err
 	}
 
