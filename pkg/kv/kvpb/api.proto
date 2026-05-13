@@ -579,6 +579,14 @@ message RevertRangeRequest {
   // shadowed / could have been GC'ed, so it can safely ignore the GC threshold.
   bool ignore_gc_threshold = 4;
 
+  // UseMVCCHistoryTruncation, when set, causes the revert to apply a per-SST
+  // MVCC suffix upper bound instead of iterating keys and writing tombstones.
+  // This masks all keys with timestamps > TargetTime via a Pebble manifest
+  // edit on each replica, avoiding any per-key I/O. Stats are marked as
+  // estimated since computing the exact delta would require the iteration
+  // this flag is designed to avoid.
+  bool use_mvcc_history_truncation = 5 [(gogoproto.customname) = "UseMVCCHistoryTruncation"];
+
   reserved 3;
 }
 

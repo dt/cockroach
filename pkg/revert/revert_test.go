@@ -15,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql"
@@ -195,4 +196,137 @@ func TestRevertGCThreshold(t *testing.T) {
 
 	_, pErr = kv.SendWrapped(ctx, kvDB.NonTransactionalSender(), &req2)
 	require.Nil(t, pErr)
+}
+
+// TestRevertRangeWithMVCCHistoryTruncation creates a SQL table, writes rows,
+// captures a timestamp, writes more rows, and then sends a RevertRange with
+// UseMVCCHistoryTruncation to verify the revert masks newer keys.
+func TestRevertRangeWithMVCCHistoryTruncation(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+	})
+	defer srv.Stopper().Stop(ctx)
+	codec := srv.ApplicationLayer().Codec()
+	runner := sqlutils.MakeSQLRunner(sqlDB)
+
+	runner.Exec(t, "CREATE TABLE t (k INT PRIMARY KEY, v STRING)")
+	runner.Exec(t, "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+
+	targetTime := kvDB.Clock().Now()
+
+	runner.Exec(t, "UPDATE t SET v = 'a2' WHERE k = 1")
+	runner.Exec(t, "INSERT INTO t VALUES (4, 'd'), (5, 'e')")
+
+	runner.CheckQueryResults(t, "SELECT count(*) FROM t", [][]string{{"5"}})
+
+	tableDesc := desctestutils.TestingGetPublicTableDescriptor(
+		kvDB, codec, "defaultdb", "t",
+	)
+	tableSpan := tableDesc.TableSpan(codec)
+
+	req := kvpb.RevertRangeRequest{
+		RequestHeader: kvpb.RequestHeader{
+			Key: tableSpan.Key, EndKey: tableSpan.EndKey,
+		},
+		TargetTime:               targetTime,
+		UseMVCCHistoryTruncation: true,
+	}
+	_, pErr := kv.SendWrapped(ctx, kvDB.NonTransactionalSender(), &req)
+	require.Nil(t, pErr)
+
+	// After the revert, only the 3 original rows should be visible and
+	// key 1 should have its original value.
+	runner.CheckQueryResults(t, "SELECT k, v FROM t ORDER BY k",
+		[][]string{{"1", "a"}, {"2", "b"}, {"3", "c"}})
+}
+
+// TestRevertRangeWithMVCCHistoryTruncationMultiTable reproduces a Pebble
+// fatal seen when a RevertRange with UseMVCCHistoryTruncation is applied
+// over a span that crosses multiple table boundaries on a non-trivial LSM.
+// The mask processing for files spanning several tables can produce a
+// manifest version with inverted range-key bounds, which versionSet
+// validation rejects fatally during apply.
+//
+// The reproduction here is deliberately minimal compared to the end-to-end
+// PCR cutover roachtest that originally surfaced the bug: it sidesteps
+// replication entirely and just drives a multi-table RevertRange against a
+// flushed LSM. If the Pebble manifest validation fires, the testserver's
+// in-process Pebble logger fatals and exits the process, failing the test.
+func TestRevertRangeWithMVCCHistoryTruncationMultiTable(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+	})
+	defer srv.Stopper().Stop(ctx)
+	codec := srv.ApplicationLayer().Codec()
+	runner := sqlutils.MakeSQLRunner(sqlDB)
+
+	store, err := srv.GetStores().(*kvserver.Stores).GetStore(srv.GetFirstStoreID())
+	require.NoError(t, err)
+	eng := store.StateEngine()
+
+	// Create several tables so the eventual RevertRange span crosses multiple
+	// table boundaries. The bug requires the mask edit to straddle file-level
+	// boundaries that fall on different table prefixes.
+	const nTables = 4
+	for i := 0; i < nTables; i++ {
+		runner.Exec(t, fmt.Sprintf("CREATE TABLE t%d (k INT PRIMARY KEY, v STRING)", i))
+		runner.Exec(t, fmt.Sprintf("INSERT INTO t%d VALUES (1,'a'),(2,'b'),(3,'c')", i))
+	}
+
+	// Flush so the initial rows (and the schema-change side-effects) land in
+	// L0 SSTs that span the table boundaries, rather than staying in the
+	// memtable where the suffix-mask processing wouldn't see them.
+	require.NoError(t, eng.Flush())
+
+	targetTime := kvDB.Clock().Now()
+
+	// Drive more writes past the target time across every table, then flush
+	// again so the post-target versions also live in SSTs subject to masking.
+	for i := 0; i < nTables; i++ {
+		runner.Exec(t, fmt.Sprintf("UPDATE t%d SET v = 'updated' WHERE k = 1", i))
+		runner.Exec(t, fmt.Sprintf("INSERT INTO t%d VALUES (4,'d'),(5,'e')", i))
+	}
+	require.NoError(t, eng.Flush())
+
+	// Build a single span that covers all the tables we just wrote.
+	firstDesc := desctestutils.TestingGetPublicTableDescriptor(
+		kvDB, codec, "defaultdb", "t0",
+	)
+	lastDesc := desctestutils.TestingGetPublicTableDescriptor(
+		kvDB, codec, "defaultdb", fmt.Sprintf("t%d", nTables-1),
+	)
+	span := roachpb.Span{
+		Key:    firstDesc.TableSpan(codec).Key,
+		EndKey: lastDesc.TableSpan(codec).EndKey,
+	}
+
+	// The bug fires inside apply (versionSet.UpdateVersionLocked after
+	// DeleteSuffixRange), so SendWrapped won't return cleanly if the mask
+	// produces an invalid manifest. A fatal here is the reproduction.
+	req := kvpb.RevertRangeRequest{
+		RequestHeader:            kvpb.RequestHeader{Key: span.Key, EndKey: span.EndKey},
+		TargetTime:               targetTime,
+		UseMVCCHistoryTruncation: true,
+	}
+	_, pErr := kv.SendWrapped(ctx, kvDB.NonTransactionalSender(), &req)
+	require.Nil(t, pErr)
+
+	// Drive a compaction too; some forms of the bug only surface when the
+	// masked file is repacked rather than on the initial mask install.
+	require.NoError(t, eng.Compact(ctx))
+
+	// Sanity-check: every table should be back to its pre-target state.
+	for i := 0; i < nTables; i++ {
+		runner.CheckQueryResults(t,
+			fmt.Sprintf("SELECT k, v FROM t%d ORDER BY k", i),
+			[][]string{{"1", "a"}, {"2", "b"}, {"3", "c"}})
+	}
 }
