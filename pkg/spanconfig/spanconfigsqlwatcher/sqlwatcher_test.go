@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package spanconfigsqlwatcherccl
+package spanconfigsqlwatcher_test
 
 import (
 	"context"
