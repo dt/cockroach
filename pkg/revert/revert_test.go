@@ -196,3 +196,49 @@ func TestRevertGCThreshold(t *testing.T) {
 	_, pErr = kv.SendWrapped(ctx, kvDB.NonTransactionalSender(), &req2)
 	require.Nil(t, pErr)
 }
+
+// TestRevertRangeWithMVCCHistoryTruncation creates a SQL table, writes rows,
+// captures a timestamp, writes more rows, and then sends a RevertRange with
+// UseMVCCHistoryTruncation to verify the revert masks newer keys.
+func TestRevertRangeWithMVCCHistoryTruncation(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+	})
+	defer srv.Stopper().Stop(ctx)
+	codec := srv.ApplicationLayer().Codec()
+	runner := sqlutils.MakeSQLRunner(sqlDB)
+
+	runner.Exec(t, "CREATE TABLE t (k INT PRIMARY KEY, v STRING)")
+	runner.Exec(t, "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+
+	targetTime := kvDB.Clock().Now()
+
+	runner.Exec(t, "UPDATE t SET v = 'a2' WHERE k = 1")
+	runner.Exec(t, "INSERT INTO t VALUES (4, 'd'), (5, 'e')")
+
+	runner.CheckQueryResults(t, "SELECT count(*) FROM t", [][]string{{"5"}})
+
+	tableDesc := desctestutils.TestingGetPublicTableDescriptor(
+		kvDB, codec, "defaultdb", "t",
+	)
+	tableSpan := tableDesc.TableSpan(codec)
+
+	req := kvpb.RevertRangeRequest{
+		RequestHeader: kvpb.RequestHeader{
+			Key: tableSpan.Key, EndKey: tableSpan.EndKey,
+		},
+		TargetTime:               targetTime,
+		UseMVCCHistoryTruncation: true,
+	}
+	_, pErr := kv.SendWrapped(ctx, kvDB.NonTransactionalSender(), &req)
+	require.Nil(t, pErr)
+
+	// After the revert, only the 3 original rows should be visible and
+	// key 1 should have its original value.
+	runner.CheckQueryResults(t, "SELECT k, v FROM t ORDER BY k",
+		[][]string{{"1", "a"}, {"2", "b"}, {"3", "c"}})
+}

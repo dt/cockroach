@@ -125,6 +125,10 @@ func RevertRange(
 		},
 	}
 
+	if args.UseMVCCHistoryTruncation {
+		return evalRevertRangeWithMVCCHistoryTruncation(ctx, cArgs, args, pd)
+	}
+
 	if empty, err := isEmptyKeyTimeRange(
 		ctx, readWriter, args.Key, args.EndKey, args.TargetTime, cArgs.Header.Timestamp,
 	); err != nil {
@@ -165,6 +169,35 @@ func RevertRange(
 		reply.NumKeys = cArgs.Header.MaxSpanRequestKeys
 		reply.ResumeReason = kvpb.RESUME_KEY_LIMIT
 	}
+
+	return pd, nil
+}
+
+// evalRevertRangeWithMVCCHistoryTruncation handles RevertRange when the
+// UseMVCCHistoryTruncation flag is set. Instead of iterating keys and writing
+// tombstones, it produces a ReplicatedStoreMutation that instructs each replica
+// to apply a per-SST suffix mask via a Pebble manifest edit, masking keys in
+// (TargetTime, Header.Timestamp]. The upper bound ensures that DistSender
+// retries of a lost response cannot mask writes that landed after the original
+// request was sent.
+func evalRevertRangeWithMVCCHistoryTruncation(
+	ctx context.Context, cArgs CommandArgs, args *kvpb.RevertRangeRequest, pd result.Result,
+) (result.Result, error) {
+	log.VEventf(ctx, 2,
+		"using MVCC history truncation to revert keys to %v", args.TargetTime)
+
+	cArgs.Stats.ContainsEstimates += 1
+
+	pd.Replicated.StoreMutation =
+		&kvserverpb.ReplicatedEvalResult_ReplicatedStoreMutation{
+			Mutation: &kvserverpb.ReplicatedEvalResult_ReplicatedStoreMutation_MvccHistoryTruncation{
+				MvccHistoryTruncation: &kvserverpb.ReplicatedEvalResult_ApplyMVCCHistoryTruncation{
+					Span:       roachpb.Span{Key: args.Key, EndKey: args.EndKey},
+					Timestamp:  args.TargetTime,
+					UpperBound: cArgs.Header.Timestamp,
+				},
+			},
+		}
 
 	return pd, nil
 }

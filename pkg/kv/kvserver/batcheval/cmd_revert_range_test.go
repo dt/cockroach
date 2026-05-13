@@ -17,6 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -361,4 +362,85 @@ func TestCmdRevertRangeMVCCRangeTombstones(t *testing.T) {
 			}, ms)
 		}
 	})
+}
+
+// TestCmdRevertRangeWithMVCCHistoryTruncation tests that RevertRange with the
+// UseMVCCHistoryTruncation flag produces the correct ReplicatedStoreMutation
+// and marks stats as estimated.
+func TestCmdRevertRangeWithMVCCHistoryTruncation(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	eng := storage.NewDefaultInMemForTesting()
+	defer eng.Close()
+
+	startKey := roachpb.Key("a")
+	endKey := roachpb.Key("z")
+	targetTime := hlc.Timestamp{WallTime: 1000}
+	evalTime := hlc.Timestamp{WallTime: 2000}
+
+	for i := 0; i < 5; i++ {
+		key := roachpb.Key(fmt.Sprintf("key%04d", i))
+		var value roachpb.Value
+		value.SetString(fmt.Sprintf("val%d", i))
+		_, err := storage.MVCCPut(
+			ctx, eng, key, hlc.Timestamp{WallTime: 500 + int64(i)}, value,
+			storage.MVCCWriteOptions{},
+		)
+		require.NoError(t, err)
+	}
+
+	desc := roachpb.RangeDescriptor{
+		RangeID:  1,
+		StartKey: roachpb.RKey(startKey),
+		EndKey:   roachpb.RKey(endKey),
+	}
+	cArgs := batcheval.CommandArgs{
+		EvalCtx: (&batcheval.MockEvalCtx{
+			ClusterSettings: cluster.MakeTestingClusterSettings(),
+			Desc:            &desc,
+			Clock:           hlc.NewClockForTesting(nil),
+		}).EvalContext(),
+		Header: kvpb.Header{
+			RangeID:   desc.RangeID,
+			Timestamp: evalTime,
+		},
+		Args: &kvpb.RevertRangeRequest{
+			RequestHeader:            kvpb.RequestHeader{Key: startKey, EndKey: endKey},
+			TargetTime:               targetTime,
+			UseMVCCHistoryTruncation: true,
+		},
+		Stats: &enginepb.MVCCStats{},
+	}
+
+	batch := eng.NewBatch()
+	defer batch.Close()
+
+	var reply kvpb.RevertRangeResponse
+	result, err := batcheval.RevertRange(ctx, batch, cArgs, &reply)
+	require.NoError(t, err)
+
+	// Should have no resume span since we don't iterate keys.
+	require.Nil(t, reply.ResumeSpan)
+
+	// Stats should be marked as estimated.
+	require.Equal(t, int64(1), cArgs.Stats.ContainsEstimates)
+
+	// Should produce a ReplicatedStoreMutation with the MVCC history truncation.
+	require.NotNil(t, result.Replicated.StoreMutation)
+	sm := result.Replicated.StoreMutation
+	trunc, ok := sm.Mutation.(*kvserverpb.ReplicatedEvalResult_ReplicatedStoreMutation_MvccHistoryTruncation)
+	require.True(t, ok)
+	require.Equal(t, roachpb.Span{Key: startKey, EndKey: endKey}, trunc.MvccHistoryTruncation.Span)
+	require.Equal(t, targetTime, trunc.MvccHistoryTruncation.Timestamp)
+	require.Equal(t, evalTime, trunc.MvccHistoryTruncation.UpperBound)
+
+	// Should still set MVCCHistoryMutation for rangefeed disconnection.
+	require.NotNil(t, result.Replicated.MVCCHistoryMutation)
+	require.Equal(t, []roachpb.Span{{Key: startKey, EndKey: endKey}},
+		result.Replicated.MVCCHistoryMutation.Spans)
+
+	// The batch should be empty — no tombstones written.
+	require.True(t, batch.Empty())
 }
