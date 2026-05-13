@@ -29,12 +29,29 @@ var maxRevertSpanNumWorkers = settings.RegisterIntSetting(
 	settings.PositiveInt,
 )
 
+// UseMVCCHistoryTruncation controls whether RevertRange uses per-SST MVCC
+// suffix masks instead of iterating keys and writing tombstones.
+var UseMVCCHistoryTruncation = settings.RegisterBoolSetting(
+	settings.SystemOnly,
+	"kv.revert_range.use_mvcc_history_truncation.enabled",
+	"use per-SST MVCC suffix masks for RevertRange instead of writing tombstones",
+	false,
+)
+
 // RevertSpansFanout calls RevertSpans in parallel. The span is
 // divided using DistSQL's PartitionSpans.
 //
 // We do this to get parallel execution of RevertRange even in the
 // case of a non-zero batch size. DistSender will not parallelize
 // requests with non-zero MaxSpanRequestKeys set.
+// RevertSpansFanoutOpts configures the behavior of RevertSpansFanout.
+type RevertSpansFanoutOpts struct {
+	// UseHistoryTruncation, when set, causes RevertRange to apply per-SST MVCC
+	// suffix masks instead of writing tombstones. The caller must ensure no
+	// intents exist in the spans and that no concurrent writes are in flight.
+	UseHistoryTruncation bool
+}
+
 func RevertSpansFanout(
 	ctx context.Context,
 	db *kv.DB,
@@ -44,14 +61,20 @@ func RevertSpansFanout(
 	ignoreGCThreshold bool,
 	batchSize int64,
 	onCompletedCallback func(context.Context, roachpb.Span) error,
+	opts ...RevertSpansFanoutOpts,
 ) error {
 	ctx, sp := tracing.ChildSpan(ctx, "sql.RevertSpansFanout")
 	defer sp.Finish()
 
+	var o RevertSpansFanoutOpts
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+
 	execCfg := rsCtx.ExecCfg()
 	maxWorkerCount := int(maxRevertSpanNumWorkers.Get(execCfg.SV()))
 	if maxWorkerCount == 1 {
-		return RevertSpans(ctx, db, spans, targetTime, ignoreGCThreshold, batchSize, onCompletedCallback)
+		return RevertSpans(ctx, db, spans, targetTime, ignoreGCThreshold, batchSize, onCompletedCallback, o)
 	}
 
 	dsp := rsCtx.DistSQLPlanner()
@@ -95,7 +118,7 @@ func RevertSpansFanout(
 		errGroup.Go(func() error {
 			spans := workerPartitions[workerIdx].Spans
 			return RevertSpans(workerCtx, db, spans,
-				targetTime, ignoreGCThreshold, batchSize, callback)
+				targetTime, ignoreGCThreshold, batchSize, callback, o)
 		})
 	}
 	return errGroup.Wait()
@@ -115,7 +138,12 @@ func RevertSpans(
 	ignoreGCThreshold bool,
 	batchSize int64,
 	onCompletedSpan func(ctx context.Context, completed roachpb.Span) error,
+	opts ...RevertSpansFanoutOpts,
 ) error {
+	var o RevertSpansFanoutOpts
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	ctx, sp := tracing.ChildSpan(ctx, "sql.RevertSpans")
 	defer sp.Finish()
 
@@ -128,8 +156,9 @@ func RevertSpans(
 					Key:    span.Key,
 					EndKey: span.EndKey,
 				},
-				TargetTime:        targetTime,
-				IgnoreGcThreshold: ignoreGCThreshold,
+				TargetTime:               targetTime,
+				IgnoreGcThreshold:        ignoreGCThreshold,
+				UseMVCCHistoryTruncation: o.UseHistoryTruncation,
 			})
 			// TODO(ssd): We should probably be setting an
 			// admission header here has well.

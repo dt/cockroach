@@ -26,6 +26,7 @@ go_library(
         "//pkg/cloud",
         "//pkg/cloud/externalconn",
         "//pkg/cloud/externalconn/connectionpb",
+        "//pkg/clusterversion",
         "//pkg/crosscluster",
         "//pkg/crosscluster/producer",
         "//pkg/crosscluster/replicationutils",
