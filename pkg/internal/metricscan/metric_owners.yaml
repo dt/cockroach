@@ -1,4 +1,5 @@
 owners:
+  '%s.l%d.%s': cockroachdb/kv
   ^admission_admitted_: cockroachdb/admission-control
   ^admission_errored_: cockroachdb/admission-control
   ^admission_granter_used_slots_: cockroachdb/admission-control

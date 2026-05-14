@@ -694,7 +694,7 @@ func addSSTablePreApply(
 	term kvpb.RaftTerm,
 	index kvpb.RaftIndex,
 	sst kvserverpb.ReplicatedEvalResult_AddSSTable,
-) bool {
+) (copied bool, stats pebble.IngestOperationStats) {
 	checksum := util.CRC32(sst.Data)
 
 	if checksum != sst.CRC32 {
@@ -731,21 +731,22 @@ func addSSTablePreApply(
 		// We're on a weird file system that doesn't support Link. This is unlikely
 		// to happen in any "normal" deployment but we have a fallback path anyway.
 		log.Eventf(ctx, "copying SSTable for ingestion at index %d, term %d: %s", index, term, ingestPath)
-		if err := ingestViaCopy(ctx, env.st, env.eng, ingestPath, term, index, sst, env.bulkLimiter); err != nil {
+		stats, err = ingestViaCopy(ctx, env.st, env.eng, ingestPath, term, index, sst, env.bulkLimiter)
+		if err != nil {
 			log.KvExec.Fatalf(ctx, "%v", err)
 		}
-		return true /* copied */
+		return true /* copied */, stats
 	}
 
 	// Regular path - we made a hard link, so we can ingest the hard link now.
-	ingestErr := env.eng.IngestLocalFiles(ctx, []string{ingestPath})
-	if ingestErr != nil {
-		log.KvExec.Fatalf(ctx, "while ingesting %s: %v", ingestPath, ingestErr)
+	stats, err = env.eng.IngestLocalFilesWithStats(ctx, []string{ingestPath})
+	if err != nil {
+		log.KvExec.Fatalf(ctx, "while ingesting %s: %v", ingestPath, err)
 	}
 	// Adding without modification succeeded, no copy necessary.
 	log.Eventf(ctx, "ingested SSTable at index %d, term %d: %s", index, term, ingestPath)
 
-	return false /* copied */
+	return false /* copied */, stats
 }
 
 func linkExternalSStablePreApply(
@@ -754,7 +755,7 @@ func linkExternalSStablePreApply(
 	term kvpb.RaftTerm,
 	index kvpb.RaftIndex,
 	sst kvserverpb.ReplicatedEvalResult_LinkExternalSSTable,
-) {
+) pebble.IngestOperationStats {
 	log.KvExec.VInfof(ctx, 1,
 		"linking external sstable %s (size %d, span %s) from %s (size %d) at rewrite ts %s, synth prefix %s",
 		sst.RemoteFilePath,
@@ -805,11 +806,12 @@ func linkExternalSStablePreApply(
 		}
 	}()
 
-	_, ingestErr := env.eng.IngestExternalFiles(ctx, []pebble.ExternalFile{externalFile})
+	stats, ingestErr := env.eng.IngestExternalFiles(ctx, []pebble.ExternalFile{externalFile})
 	if ingestErr != nil {
 		log.KvExec.Fatalf(ctx, "while ingesting %s: %v", sst.RemoteFilePath, ingestErr)
 	}
 	log.Eventf(ctx, "ingested SSTable at index %d, term %d: external %s", index, term, sst.RemoteFilePath)
+	return stats
 }
 
 // ingestViaCopy writes the SST to ingestPath (with rate limiting) and then ingests it
@@ -825,7 +827,7 @@ func ingestViaCopy(
 	index kvpb.RaftIndex,
 	sst kvserverpb.ReplicatedEvalResult_AddSSTable,
 	limiter *rate.Limiter,
-) error {
+) (pebble.IngestOperationStats, error) {
 	// TODO(tschottdorf): remove this once sideloaded storage guarantees its
 	// existence.
 	if err := eng.Env().MkdirAll(filepath.Dir(ingestPath), os.ModePerm); err != nil {
@@ -837,17 +839,18 @@ func ingestViaCopy(
 		// command as committed). Just unlink the file (the storage engine
 		// created a hard link); after that we're free to write it again.
 		if err := eng.Env().Remove(ingestPath); err != nil {
-			return errors.Wrapf(err, "while removing existing file during ingestion of %s", ingestPath)
+			return pebble.IngestOperationStats{}, errors.Wrapf(err, "while removing existing file during ingestion of %s", ingestPath)
 		}
 	}
 	if err := kvserverbase.WriteFileSyncing(ctx, ingestPath, sst.Data, eng.Env(), 0600, st, limiter, fs.PebbleIngestionWriteCategory); err != nil {
-		return errors.Wrapf(err, "while ingesting %s", ingestPath)
+		return pebble.IngestOperationStats{}, errors.Wrapf(err, "while ingesting %s", ingestPath)
 	}
-	if err := eng.IngestLocalFiles(ctx, []string{ingestPath}); err != nil {
-		return errors.Wrapf(err, "while ingesting %s", ingestPath)
+	stats, err := eng.IngestLocalFilesWithStats(ctx, []string{ingestPath})
+	if err != nil {
+		return pebble.IngestOperationStats{}, errors.Wrapf(err, "while ingesting %s", ingestPath)
 	}
 	log.Eventf(ctx, "ingested SSTable at index %d, term %d: %s", index, term, ingestPath)
-	return nil
+	return stats, nil
 }
 
 func (r *Replica) handleReadWriteLocalEvalResult(ctx context.Context, lResult result.LocalResult) {

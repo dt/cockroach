@@ -39,6 +39,11 @@ type appBatchStats struct {
 	// of the sstable to ingest.
 	numWriteAndIngestedBytes int64
 
+	ingestedLevelBytes [7]int64
+	ingestedLevelFiles [7]int64
+	linkedLevelBytes   [7]int64
+	linkedLevelFiles   [7]int64
+
 	// NB: update `merge` when adding a new field.
 }
 
@@ -48,6 +53,12 @@ func (s *appBatchStats) merge(ss appBatchStats) {
 	s.numEntriesProcessedBytes += ss.numEntriesProcessedBytes
 	s.numEmptyEntries += ss.numEmptyEntries
 	s.numWriteAndIngestedBytes += ss.numWriteAndIngestedBytes
+	for i := range s.ingestedLevelBytes {
+		s.ingestedLevelBytes[i] += ss.ingestedLevelBytes[i]
+		s.ingestedLevelFiles[i] += ss.ingestedLevelFiles[i]
+		s.linkedLevelBytes[i] += ss.linkedLevelBytes[i]
+		s.linkedLevelFiles[i] += ss.linkedLevelFiles[i]
+	}
 }
 
 // appBatch is the in-progress foundation for standalone log entry
@@ -191,7 +202,7 @@ func (b *appBatch) runPostAddTriggers(
 	// applied in its own batch so it's not possible that any other commands
 	// which precede this command can shadow writes from this SSTable.
 	if res.AddSSTable != nil {
-		copied := addSSTablePreApply(
+		copied, stats := addSSTablePreApply(
 			ctx,
 			env,
 			kvpb.RaftTerm(cmd.Term),
@@ -201,6 +212,10 @@ func (b *appBatch) runPostAddTriggers(
 		b.numAddSST++
 		if copied {
 			b.numAddSSTCopies++
+		}
+		for i := range b.ingestedLevelBytes {
+			b.ingestedLevelBytes[i] += int64(stats.LevelBytes[i])
+			b.ingestedLevelFiles[i] += int64(stats.LevelFiles[i])
 		}
 		if added := res.Delta.KeyCount; added > 0 {
 			// So far numMutations only tracks the number of keys in
@@ -212,12 +227,16 @@ func (b *appBatch) runPostAddTriggers(
 		}
 	}
 	if res.LinkExternalSSTable != nil {
-		linkExternalSStablePreApply(
+		stats := linkExternalSStablePreApply(
 			ctx,
 			env,
 			kvpb.RaftTerm(cmd.Term),
 			cmd.Index(),
 			*res.LinkExternalSSTable)
+		for i := range b.linkedLevelBytes {
+			b.linkedLevelBytes[i] += int64(stats.LevelBytes[i])
+			b.linkedLevelFiles[i] += int64(stats.LevelFiles[i])
+		}
 	}
 
 	if res.Excise != nil {

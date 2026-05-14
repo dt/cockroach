@@ -724,6 +724,20 @@ func (b *replicaAppBatch) recordStatsOnCommit() {
 	if n := b.numAddSSTCopies; n > 0 {
 		b.r.store.metrics.AddSSTableApplicationCopies.Inc(int64(n))
 	}
+	for i := range b.ingestedLevelBytes {
+		if n := b.ingestedLevelBytes[i]; n > 0 {
+			b.r.store.metrics.IngestedLevelBytes[i].Inc(n)
+		}
+		if n := b.ingestedLevelFiles[i]; n > 0 {
+			b.r.store.metrics.IngestedLevelFiles[i].Inc(n)
+		}
+		if n := b.linkedLevelBytes[i]; n > 0 {
+			b.r.store.metrics.LinkedLevelBytes[i].Inc(n)
+		}
+		if n := b.linkedLevelFiles[i]; n > 0 {
+			b.r.store.metrics.LinkedLevelFiles[i].Inc(n)
+		}
+	}
 
 	elapsed := timeutil.Since(b.start)
 	b.r.store.metrics.RaftCommandCommitLatency.RecordValue(elapsed.Nanoseconds())

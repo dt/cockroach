@@ -21740,6 +21740,132 @@ layers:
       aggregation: AVG
       derivative: NONE
       owner: cockroachdb/kv
+    - name: storage.ingested.l0.bytes
+      exported_name: storage_ingested_l0_bytes
+      description: Bytes ingested via AddSSTable into level 0 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l0.files
+      exported_name: storage_ingested_l0_files
+      description: Files ingested via AddSSTable into level 0 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l1.bytes
+      exported_name: storage_ingested_l1_bytes
+      description: Bytes ingested via AddSSTable into level 1 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l1.files
+      exported_name: storage_ingested_l1_files
+      description: Files ingested via AddSSTable into level 1 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l2.bytes
+      exported_name: storage_ingested_l2_bytes
+      description: Bytes ingested via AddSSTable into level 2 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l2.files
+      exported_name: storage_ingested_l2_files
+      description: Files ingested via AddSSTable into level 2 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l3.bytes
+      exported_name: storage_ingested_l3_bytes
+      description: Bytes ingested via AddSSTable into level 3 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l3.files
+      exported_name: storage_ingested_l3_files
+      description: Files ingested via AddSSTable into level 3 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l4.bytes
+      exported_name: storage_ingested_l4_bytes
+      description: Bytes ingested via AddSSTable into level 4 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l4.files
+      exported_name: storage_ingested_l4_files
+      description: Files ingested via AddSSTable into level 4 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l5.bytes
+      exported_name: storage_ingested_l5_bytes
+      description: Bytes ingested via AddSSTable into level 5 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l5.files
+      exported_name: storage_ingested_l5_files
+      description: Files ingested via AddSSTable into level 5 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l6.bytes
+      exported_name: storage_ingested_l6_bytes
+      description: Bytes ingested via AddSSTable into level 6 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.ingested.l6.files
+      exported_name: storage_ingested_l6_files
+      description: Files ingested via AddSSTable into level 6 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
     - name: storage.initial_stats_complete
       exported_name: storage_initial_stats_complete
       description: Set to 1 when initial table stats collection is complete.
@@ -22489,6 +22615,132 @@ layers:
       unit: BYTES
       aggregation: AVG
       derivative: NONE
+      owner: cockroachdb/kv
+    - name: storage.linked.l0.bytes
+      exported_name: storage_linked_l0_bytes
+      description: Bytes linked via LinkExternalSSTable into level 0 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l0.files
+      exported_name: storage_linked_l0_files
+      description: Files linked via LinkExternalSSTable into level 0 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l1.bytes
+      exported_name: storage_linked_l1_bytes
+      description: Bytes linked via LinkExternalSSTable into level 1 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l1.files
+      exported_name: storage_linked_l1_files
+      description: Files linked via LinkExternalSSTable into level 1 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l2.bytes
+      exported_name: storage_linked_l2_bytes
+      description: Bytes linked via LinkExternalSSTable into level 2 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l2.files
+      exported_name: storage_linked_l2_files
+      description: Files linked via LinkExternalSSTable into level 2 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l3.bytes
+      exported_name: storage_linked_l3_bytes
+      description: Bytes linked via LinkExternalSSTable into level 3 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l3.files
+      exported_name: storage_linked_l3_files
+      description: Files linked via LinkExternalSSTable into level 3 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l4.bytes
+      exported_name: storage_linked_l4_bytes
+      description: Bytes linked via LinkExternalSSTable into level 4 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l4.files
+      exported_name: storage_linked_l4_files
+      description: Files linked via LinkExternalSSTable into level 4 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l5.bytes
+      exported_name: storage_linked_l5_bytes
+      description: Bytes linked via LinkExternalSSTable into level 5 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l5.files
+      exported_name: storage_linked_l5_files
+      description: Files linked via LinkExternalSSTable into level 5 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l6.bytes
+      exported_name: storage_linked_l6_bytes
+      description: Bytes linked via LinkExternalSSTable into level 6 of the LSM
+      y_axis_label: Bytes
+      type: COUNTER
+      unit: BYTES
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+      owner: cockroachdb/kv
+    - name: storage.linked.l6.files
+      exported_name: storage_linked_l6_files
+      description: Files linked via LinkExternalSSTable into level 6 of the LSM
+      y_axis_label: Files
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
       owner: cockroachdb/kv
     - name: storage.marked-for-compaction-files
       exported_name: storage_marked_for_compaction_files

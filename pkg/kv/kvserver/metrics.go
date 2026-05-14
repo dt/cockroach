@@ -2909,6 +2909,27 @@ var (
 		Visibility:  metric.Metadata_SUPPORT,
 	}
 
+	metaIngestedLevelBytes = ingestLevelMetricMetadata(
+		"storage.ingested", "bytes",
+		"Bytes ingested via AddSSTable into level %d of the LSM",
+		"Bytes", metric.Unit_BYTES,
+	)
+	metaIngestedLevelFiles = ingestLevelMetricMetadata(
+		"storage.ingested", "files",
+		"Files ingested via AddSSTable into level %d of the LSM",
+		"Files", metric.Unit_COUNT,
+	)
+	metaLinkedLevelBytes = ingestLevelMetricMetadata(
+		"storage.linked", "bytes",
+		"Bytes linked via LinkExternalSSTable into level %d of the LSM",
+		"Bytes", metric.Unit_BYTES,
+	)
+	metaLinkedLevelFiles = ingestLevelMetricMetadata(
+		"storage.linked", "files",
+		"Files linked via LinkExternalSSTable into level %d of the LSM",
+		"Files", metric.Unit_COUNT,
+	)
+
 	// Bulk low-priority read request metrics.
 	metaBulkReadEvalTotalDelay = metric.Metadata{
 		Name:        "kv.bulk_low_pri_read.delay.total",
@@ -3759,6 +3780,12 @@ type StoreMetrics struct {
 	AddSSTableAsWrites           *metric.Counter
 	AddSSTableProposalTotalDelay *metric.Counter
 
+	// Per-level ingestion stats from AddSSTable and LinkExternalSSTable.
+	IngestedLevelBytes [7]*metric.Counter
+	IngestedLevelFiles [7]*metric.Counter
+	LinkedLevelBytes   [7]*metric.Counter
+	LinkedLevelFiles   [7]*metric.Counter
+
 	// Records how much low-priority bulk read request throttling was performed.
 	BulkLowPriReadRequestTotalDelay *metric.Counter
 
@@ -4586,6 +4613,11 @@ func newStoreMetrics(histogramWindow time.Duration) *StoreMetrics {
 		AddSSTableApplicationCopies:  metric.NewCounter(metaAddSSTableApplicationCopies),
 		AddSSTableProposalTotalDelay: metric.NewCounter(metaAddSSTableEvalTotalDelay),
 
+		IngestedLevelBytes: storageLevelCounterSlice(metaIngestedLevelBytes),
+		IngestedLevelFiles: storageLevelCounterSlice(metaIngestedLevelFiles),
+		LinkedLevelBytes:   storageLevelCounterSlice(metaLinkedLevelBytes),
+		LinkedLevelFiles:   storageLevelCounterSlice(metaLinkedLevelFiles),
+
 		// Low-priority bulk read request delay counter.
 		BulkLowPriReadRequestTotalDelay: metric.NewCounter(metaBulkReadEvalTotalDelay),
 
@@ -5073,6 +5105,21 @@ func storageLevelMetricMetadata(
 		// Apply visibility override if specified for this level
 		if visibility, ok := visibilityOverrides[i]; ok {
 			sl[i].Visibility = visibility
+		}
+	}
+	return sl
+}
+
+func ingestLevelMetricMetadata(
+	prefix, suffix, helpTpl, measurement string, unit metric.Unit,
+) [7]metric.Metadata {
+	var sl [7]metric.Metadata
+	for i := range sl {
+		sl[i] = metric.Metadata{
+			Name:        fmt.Sprintf("%s.l%d.%s", prefix, i, suffix),
+			Help:        fmt.Sprintf(helpTpl, i),
+			Measurement: measurement,
+			Unit:        unit,
 		}
 	}
 	return sl
