@@ -20,6 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 )
 
 // clearRangeThreshold specifies the number of consecutive keys to clear where
@@ -126,8 +127,13 @@ func RevertRange(
 	}
 
 	if args.UseMVCCHistoryTruncation {
+		ctx, sp := tracing.ChildSpan(ctx, "kv.RevertRange.mvccHistoryTruncation")
+		defer sp.Finish()
 		return evalRevertRangeWithMVCCHistoryTruncation(ctx, cArgs, args, pd)
 	}
+
+	ctx, sp := tracing.ChildSpan(ctx, "kv.RevertRange.iterate")
+	defer sp.Finish()
 
 	if empty, err := isEmptyKeyTimeRange(
 		ctx, readWriter, args.Key, args.EndKey, args.TargetTime, cArgs.Header.Timestamp,

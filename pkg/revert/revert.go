@@ -147,52 +147,66 @@ func RevertSpans(
 	ctx, sp := tracing.ChildSpan(ctx, "sql.RevertSpans")
 	defer sp.Finish()
 
+	// revertOne issues a single RevertRangeRequest and returns the resume span
+	// (or nil). It is wrapped in its own child span so that per-request cost
+	// (one iteration of the ResumeSpan pagination loop) is visible in trace
+	// aggregates, alongside the per-worker sql.RevertSpans span above.
+	revertOne := func(ctx context.Context, span *roachpb.Span) (*roachpb.Span, error) {
+		ctx, sp := tracing.ChildSpan(ctx, "sql.RevertRange")
+		defer sp.Finish()
+
+		var b kv.Batch
+		b.AddRawRequest(&kvpb.RevertRangeRequest{
+			RequestHeader: kvpb.RequestHeader{
+				Key:    span.Key,
+				EndKey: span.EndKey,
+			},
+			TargetTime:               targetTime,
+			IgnoreGcThreshold:        ignoreGCThreshold,
+			UseMVCCHistoryTruncation: o.UseHistoryTruncation,
+		})
+		// TODO(ssd): We should probably be setting an
+		// admission header here has well.
+		b.Header.MaxSpanRequestKeys = batchSize
+
+		log.VEventf(ctx, 2, "RevertRange %s %s", span, targetTime)
+		if err := db.Run(ctx, &b); err != nil {
+			return nil, err
+		}
+
+		if l := len(b.RawResponse().Responses); l != 1 {
+			return nil, errors.AssertionFailedf("expected single response, got %d", l)
+		}
+
+		resp := b.RawResponse().Responses[0].GetRevertRange()
+		if resp == nil {
+			return nil, errors.AssertionFailedf("expected RevertRangeResponse, got: %v", resp)
+		}
+
+		completed := *span
+		if resp.ResumeSpan != nil {
+			if !resp.ResumeSpan.Valid() {
+				return nil, errors.Errorf("invalid resume span: %s", resp.ResumeSpan)
+			}
+			completed.EndKey = resp.ResumeSpan.Key
+		}
+
+		if onCompletedSpan != nil {
+			if err := onCompletedSpan(ctx, completed); err != nil {
+				return nil, err
+			}
+		}
+		return resp.ResumeSpan, nil
+	}
+
 	for _, sp := range spans {
 		span := &sp
 		for span != nil {
-			var b kv.Batch
-			b.AddRawRequest(&kvpb.RevertRangeRequest{
-				RequestHeader: kvpb.RequestHeader{
-					Key:    span.Key,
-					EndKey: span.EndKey,
-				},
-				TargetTime:               targetTime,
-				IgnoreGcThreshold:        ignoreGCThreshold,
-				UseMVCCHistoryTruncation: o.UseHistoryTruncation,
-			})
-			// TODO(ssd): We should probably be setting an
-			// admission header here has well.
-			b.Header.MaxSpanRequestKeys = batchSize
-
-			log.VEventf(ctx, 2, "RevertRange %s %s", span, targetTime)
-			if err := db.Run(ctx, &b); err != nil {
+			next, err := revertOne(ctx, span)
+			if err != nil {
 				return err
 			}
-
-			if l := len(b.RawResponse().Responses); l != 1 {
-				return errors.AssertionFailedf("expected single response, got %d", l)
-			}
-
-			resp := b.RawResponse().Responses[0].GetRevertRange()
-			if resp == nil {
-				return errors.AssertionFailedf("expected RevertRangeResponse, got: %v", resp)
-			}
-
-			completed := *span
-			span = resp.ResumeSpan
-
-			if resp.ResumeSpan != nil {
-				if !resp.ResumeSpan.Valid() {
-					return errors.Errorf("invalid resume span: %s", resp.ResumeSpan)
-				}
-				completed.EndKey = resp.ResumeSpan.Key
-			}
-
-			if onCompletedSpan != nil {
-				if err := onCompletedSpan(ctx, completed); err != nil {
-					return err
-				}
-			}
+			span = next
 		}
 	}
 
