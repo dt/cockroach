@@ -82,6 +82,16 @@ func (s *spanSetEngine) Excise(ctx context.Context, span roachpb.Span) error {
 	return s.e.Excise(ctx, span)
 }
 
+// ApplySuffixMask implements the storage.Engine interface.
+func (s *spanSetEngine) ApplySuffixMask(
+	ctx context.Context, span roachpb.Span, lower, upper []byte,
+) error {
+	if err := s.spans.CheckAllowed(SpanReadWrite, TrickySpan{Key: span.Key, EndKey: span.EndKey}); err != nil {
+		return err
+	}
+	return s.e.ApplySuffixMask(ctx, span, lower, upper)
+}
+
 // Download implements the storage.EngineWithoutRW interface.
 func (s *spanSetEngine) Download(ctx context.Context, span roachpb.Span, copy bool) error {
 	if err := s.spans.CheckAllowed(SpanReadWrite, TrickySpan{Key: span.Key, EndKey: span.EndKey}); err != nil {

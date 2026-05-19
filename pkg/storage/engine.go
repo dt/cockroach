@@ -950,6 +950,14 @@ type Engine interface {
 	Env() *fs.Env
 	// Excise removes all data for the given span from the engine.
 	Excise(ctx context.Context, span roachpb.Span) error
+	// ApplySuffixMask applies a per-SST MVCC suffix mask to all SSTs
+	// overlapping the given span. Point and range keys with MVCC timestamps in
+	// the range (lower, upper] are masked from all iterators and eventually
+	// dropped during compaction. Both suffixes should be encoded MVCC timestamps
+	// (see mvccencoding.EncodeMVCCTimestampSuffix).
+	ApplySuffixMask(
+		ctx context.Context, span roachpb.Span, lower, upper []byte,
+	) error
 	// Flush causes the engine to write all in-memory data to disk
 	// immediately.
 	Flush() error
