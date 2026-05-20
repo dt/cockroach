@@ -15,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
@@ -30,12 +31,14 @@ var maxRevertSpanNumWorkers = settings.RegisterIntSetting(
 )
 
 // UseMVCCHistoryTruncation controls whether RevertRange uses per-SST MVCC
-// suffix masks instead of iterating keys and writing tombstones.
+// suffix masks instead of iterating keys and writing tombstones. The default
+// is metamorphic so tests exercise both paths in CI.
 var UseMVCCHistoryTruncation = settings.RegisterBoolSetting(
 	settings.SystemOnly,
 	"kv.revert_range.use_mvcc_history_truncation.enabled",
 	"use per-SST MVCC suffix masks for RevertRange instead of writing tombstones",
-	false,
+	metamorphic.ConstantWithTestBool(
+		"kv.revert_range.use_mvcc_history_truncation.enabled", true),
 )
 
 // RevertSpansFanout calls RevertSpans in parallel. The span is

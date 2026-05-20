@@ -435,6 +435,10 @@ func TestCutoverFractionProgressed(t *testing.T) {
 	progressUpdated := make(chan struct{})
 	progressRead := make(chan struct{})
 	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
+		// The cutoverProgressTracker code path under test only runs on the
+		// system tenant in production, so pin the test there rather than
+		// letting the metamorphic chooser pick a virtual cluster.
+		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
 		Knobs: base.TestingKnobs{
 			Streaming: &sql.StreamingTestingKnobs{
 				OverrideRevertRangeBatchSize: 1,
@@ -450,7 +454,16 @@ func TestCutoverFractionProgressed(t *testing.T) {
 	})
 	defer s.Stopper().Stop(ctx)
 
-	_, err := sqlDB.Exec(`CREATE TABLE foo(id) AS SELECT generate_series(1, 10)`)
+	// This test asserts per-batch progress updates driven by
+	// OverrideRevertRangeBatchSize=1, which is only meaningful under the
+	// iterate-and-tombstone RevertRange path. The MVCC history truncation
+	// fast path completes each input span in one shot, so pin the slow path
+	// on for this test.
+	_, err := sqlDB.Exec(
+		`SET CLUSTER SETTING kv.revert_range.use_mvcc_history_truncation.enabled = false`)
+	require.NoError(t, err)
+
+	_, err = sqlDB.Exec(`CREATE TABLE foo(id) AS SELECT generate_series(1, 10)`)
 	require.NoError(t, err)
 
 	cutover := hlc.Timestamp{WallTime: timeutil.Now().UnixNano()}
@@ -594,6 +607,19 @@ func TestCutoverCheckpointing(t *testing.T) {
 	ctx := context.Background()
 	c, cleanup := replicationtestutils.CreateTenantStreamingClusters(ctx, t, args)
 	defer cleanup()
+
+	// This test exercises mid-cutover checkpointing by pausing after a few
+	// progress updates and asserting that resume picks up only the remaining
+	// work. That observation depends on cutover producing intermediate
+	// progress states within a single input span — which only the iterate
+	// RevertRange path does (via ResumeSpan pagination driven by
+	// OverrideRevertRangeBatchSize=1 above). The MVCC history truncation
+	// fast path completes each input span in one shot, so with a single
+	// tenant-wide RemainingCutoverSpans the test would never observe an
+	// intermediate state. Pin the slow path on for this test until cutover
+	// seeds RemainingCutoverSpans with per-range spans.
+	c.DestSysSQL.Exec(t,
+		`SET CLUSTER SETTING kv.revert_range.use_mvcc_history_truncation.enabled = false`)
 
 	producerJobIDInt, replicationJobIDInt := c.StartStreamReplication(ctx)
 	replicationJobID := jobspb.JobID(replicationJobIDInt)
